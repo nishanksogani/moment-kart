@@ -1698,15 +1698,22 @@ function AdminProducts() {
       dimensions,
     };
     setBusy(true);
-    const { ok, data } = await saveProduct(body, editingId);
-    setBusy(false);
-    if (ok) {
-      setForm(EMPTY_PRODUCT);
-      setEditingId(null);
-      setFormOpen(false);
-      load();
-    } else {
-      setError(data.error || 'Save failed');
+    try {
+      const { ok, data } = await saveProduct(body, editingId);
+      if (ok) {
+        // Success path
+        setForm(EMPTY_PRODUCT);
+        setEditingId(null);
+        setFormOpen(false);
+        load();
+      } else {
+        setError(data.error || 'Save failed');
+      }
+    } catch (err) {
+      console.error('Save error:', err);
+      setError(`Error: ${err.message || 'Save failed'}`);
+    } finally {
+      setBusy(false);  // Always called, even on error
     }
   }
 
