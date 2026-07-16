@@ -184,7 +184,11 @@ export async function saveProduct(product, editingId) {
   if (!IS_DEV) {
     return toResult(authFetch('/api/products', {
       method: editingId ? 'PUT' : 'POST',
-      body: JSON.stringify({ ...product, id: editingId }),
+      body: JSON.stringify({ 
+          ...product, 
+          id: editingId,
+          legacy_id: product.legacy_id || uid(),  // ← Auto-generate if missing
+        }),
     }));
   }
   const products = read(PRODUCTS_KEY, []);
