@@ -193,7 +193,7 @@ export async function saveProduct(product, editingId) {
       body: JSON.stringify({ 
           ...product, 
           id: editingId,
-          legacy_id: product.legacy_id || uid(),  // ← Auto-generate if missing
+          legacy_id: product?.legacy_id, 
         }),
     }));
   }
@@ -202,7 +202,7 @@ export async function saveProduct(product, editingId) {
     const idx = products.findIndex((p) => p.id === editingId);
     if (idx >= 0) products[idx] = { ...products[idx], ...product, id: editingId };
   } else {
-    products.push({ ...product, id: nextId(products), legacy_id: product.legacy_id || uid() }) // new products default to the bottom of the shop order
+    products.push({ ...product, id: nextId(products), legacy_id: product?.legacy_id }) // new products default to the bottom of the shop order
   }
   write(PRODUCTS_KEY, products);
   return { ok: true, data: {} };
