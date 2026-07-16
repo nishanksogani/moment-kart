@@ -34,8 +34,9 @@ async function marketingHandler(req, res) {
   }
 
   const users = await sql`SELECT email, name FROM users WHERE email = ANY(${userEmails})`;
+  // Cropped thumbnail only (never the full original) — keeps the campaign email light.
   const products = productIds.length
-    ? await sql`SELECT id, name, price_paise, image_url FROM products WHERE id = ANY(${productIds})`
+    ? await sql`SELECT id, name, price_paise, thumb_url AS image_url FROM products WHERE id = ANY(${productIds}::bigint[])`
     : [];
 
   let sent = 0;

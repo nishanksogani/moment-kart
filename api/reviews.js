@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { db, ensureSchema } from './_db.js';
 import { requireAuth, requireAdmin } from './_auth.js';
 import { log, logError } from './_log.js';
@@ -42,11 +41,11 @@ async function reviewsHandler(req, res) {
       const status = req.query.status;
       const rows = status
         ? await sql`
-            SELECT r.*, p.name AS product_name, p.image_url AS product_image FROM reviews r
+            SELECT r.*, p.name AS product_name, p.thumb_url AS product_image FROM reviews r
             JOIN products p ON p.id = r.product_id
             WHERE r.status = ${status} ORDER BY r.created_at DESC`
         : await sql`
-            SELECT r.*, p.name AS product_name, p.image_url AS product_image FROM reviews r
+            SELECT r.*, p.name AS product_name, p.thumb_url AS product_image FROM reviews r
             JOIN products p ON p.id = r.product_id ORDER BY r.created_at DESC`;
       return res.json(rows);
     }
@@ -65,8 +64,8 @@ async function reviewsHandler(req, res) {
     const [product] = await sql`SELECT id FROM products WHERE id = ${productId}`;
     if (!product) return res.status(404).json({ error: 'Product not found' });
     await sql`
-      INSERT INTO reviews (id, product_id, user_id, user_name, rating, text)
-      VALUES (${randomUUID()}, ${productId}, ${user.uid}, ${user.name}, ${stars}, ${String(text || '').slice(0, 1000)})
+      INSERT INTO reviews (product_id, user_id, user_name, rating, text)
+      VALUES (${productId}, ${user.uid}, ${user.name}, ${stars}, ${String(text || '').slice(0, 1000)})
     `;
     log('review_submitted', { productId, userId: user.uid, rating: stars });
     return res.status(201).json({ message: 'Review submitted — it will appear once approved' });

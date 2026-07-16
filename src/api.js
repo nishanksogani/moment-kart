@@ -52,7 +52,13 @@ const ORDERS_KEY = 'mk-dev-orders';
 const CODES_KEY = 'mk-dev-codes';
 const REVIEWS_KEY = 'mk-dev-reviews';
 
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+// Fulfilled and cancelled are terminal states: no further transitions happen on their own,
+// so they're the only statuses that can be deleted or carry a closing note.
+export const TERMINAL_ORDER_STATUSES = ['fulfilled', 'cancelled'];
+
+// Mirrors prod's numeric ids (Postgres BIGINT, returned as strings) — dev storage
+// is a plain array, so the next id is just the current max + 1.
+const nextId = (items) => String(items.reduce((m, it) => Math.max(m, Number(it.id) || 0), 0) + 1);
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Dev admin credentials come from .env.local (ADMIN_EMAIL / ADMIN_PASSWORD —
@@ -121,7 +127,7 @@ export async function authAction(body) {
   if (body.action === 'signup') {
     if (user?.verified) return { ok: false, data: { error: 'Account already exists — please login' } };
     const next = users.filter((u) => u.email !== email);
-    next.push({ id: user?.id || uid(), email, name: body.name, password: body.password, verified: false, address: null, created_at: new Date().toISOString() });
+    next.push({ id: user?.id || nextId(users), email, name: body.name, password: body.password, verified: false, address: null, created_at: new Date().toISOString() });
     write(USERS_KEY, next);
     issueDevCode(codes, email);
     return { ok: true, data: {} };
@@ -196,7 +202,7 @@ export async function saveProduct(product, editingId) {
     const idx = products.findIndex((p) => p.id === editingId);
     if (idx >= 0) products[idx] = { ...products[idx], ...product, id: editingId };
   } else {
-    products.unshift({ ...product, id: uid() });
+    products.push({ ...product, id: nextId(products) }); // new products default to the bottom of the shop order
   }
   write(PRODUCTS_KEY, products);
   return { ok: true, data: {} };
@@ -205,6 +211,17 @@ export async function saveProduct(product, editingId) {
 export async function deleteProduct(id) {
   if (!IS_DEV) return toResult(authFetch(`/api/products?id=${id}`, { method: 'DELETE' }));
   write(PRODUCTS_KEY, read(PRODUCTS_KEY, []).filter((p) => p.id !== id));
+  return { ok: true, data: {} };
+}
+
+// Admin: re-rank the shop grid — ids is the full product list in the desired order.
+export async function reorderProducts(ids) {
+  if (!IS_DEV) return toResult(authFetch('/api/products', { method: 'PATCH', body: JSON.stringify({ order: ids }) }));
+  const products = read(PRODUCTS_KEY, []);
+  const byId = new Map(products.map((p) => [p.id, p]));
+  const reordered = ids.map((id) => byId.get(id)).filter(Boolean);
+  const missing = products.filter((p) => !ids.includes(p.id));
+  write(PRODUCTS_KEY, [...reordered, ...missing]);
   return { ok: true, data: {} };
 }
 
@@ -271,14 +288,24 @@ export async function placeOrder({ items, address, upi_ref, transaction_date }) 
     const product = products.find((p) => p.id === item.productId);
     if (!product) return { ok: false, data: { error: 'Product no longer available' } };
     if (!product.in_stock) return { ok: false, data: { error: `"${product.name}" is out of stock` } };
+
+    let price_paise = product.price_paise;
+    let dimension = null;
+    const dims = Array.isArray(product.dimensions) ? product.dimensions : [];
+    if (dims.length > 0) {
+      dimension = dims.find((d) => d.label === item.dimension);
+      if (!dimension) return { ok: false, data: { error: `Choose a size for "${product.name}"` } };
+      price_paise = dimension.price_paise;
+    }
+
     const qty = Math.max(1, Math.min(20, parseInt(item.qty, 10) || 1));
-    total += product.price_paise * qty;
-    verifiedItems.push({ productId: product.id, name: product.name, price_paise: product.price_paise, qty, message: product.customizable ? String(item.message || '').slice(0, 200) : '' });
+    total += price_paise * qty;
+    verifiedItems.push({ productId: product.id, name: product.name, price_paise, dimension: dimension?.label || null, qty, message: product.customizable ? String(item.message || '').slice(0, 200) : '' });
   }
   const orders = read(ORDERS_KEY, []);
   const orderNo = Math.max(1000, ...orders.map((o) => Number(o.order_no) || 0)) + 1;
   orders.unshift({
-    id: uid(), order_no: orderNo, user_email: me?.email, user_name: me?.name,
+    id: nextId(orders), order_no: orderNo, user_email: me?.email, user_name: me?.name,
     items: verifiedItems, address, total_paise: total,
     upi_ref, status: 'pending', created_at: new Date().toISOString(),
     paid_at: transaction_date || todayStr(),
@@ -358,6 +385,8 @@ export async function setOrderStatus(id, status, extra = {}) {
           address: order.address,
         },
       });
+    } else if (TERMINAL_ORDER_STATUSES.includes(status)) {
+      order.status_note = extra.note ? String(extra.note).trim().slice(0, 500) : null;
     }
   }
   write(ORDERS_KEY, orders);
@@ -365,12 +394,12 @@ export async function setOrderStatus(id, status, extra = {}) {
 }
 
 // Admin: permanently delete orders (frees database space).
-// Only fulfilled orders can be deleted — active ones must run their course.
+// Only fulfilled/cancelled orders can be deleted — active ones must run their course.
 export async function deleteOrders(ids) {
   if (!IS_DEV) return toResult(authFetch('/api/orders', { method: 'DELETE', body: JSON.stringify({ ids }) }));
   const idSet = new Set(ids);
   const orders = read(ORDERS_KEY, []);
-  const next = orders.filter((o) => !(idSet.has(o.id) && o.status === 'fulfilled'));
+  const next = orders.filter((o) => !(idSet.has(o.id) && TERMINAL_ORDER_STATUSES.includes(o.status)));
   write(ORDERS_KEY, next);
   const deleted = orders.length - next.length;
   return { ok: true, data: { deleted, skipped: ids.length - deleted } };
@@ -444,7 +473,7 @@ export async function submitReview({ productId, rating, text }) {
   if (me.admin) return { ok: false, data: { error: 'The admin cannot review products' } };
   const reviews = read(REVIEWS_KEY, []);
   reviews.unshift({
-    id: uid(), product_id: productId, user_id: me.uid, user_name: me.name,
+    id: nextId(reviews), product_id: productId, user_id: me.uid, user_name: me.name,
     rating, text: String(text || '').slice(0, 1000),
     status: 'pending', featured: false, created_at: new Date().toISOString(),
   });

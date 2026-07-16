@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import QRCode from 'qrcode';
 import {
-  AUTH_KEY, authAction, fetchProducts, saveProduct, deleteProduct,
+  AUTH_KEY, authAction, fetchProducts, saveProduct, deleteProduct, reorderProducts,
   fetchProfile, saveProfile, changePassword, placeOrder as apiPlaceOrder,
   fetchMyOrders, fetchAdminOrders, setOrderStatus as apiSetOrderStatus, resubmitPayment,
-  deleteOrders,
+  deleteOrders, TERMINAL_ORDER_STATUSES,
   fetchReviews, fetchFeaturedReviews, submitReview, fetchAdminReviews, updateReview, deleteReview,
   fetchAdminUsers, impersonateUser, sendMarketingEmail,
 } from './api.js';
@@ -21,6 +21,24 @@ const APP_NAME = (typeof __APP_NAME__ !== 'undefined' && __APP_NAME__) || 'Momen
 const [BRAND_FIRST, ...BRAND_REST_WORDS] = APP_NAME.split(' ');
 const BRAND_REST = BRAND_REST_WORDS.join(' ');
 const BRAND_INITIALS = APP_NAME.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+
+// Thumbnail for an order's first line item. `products` is the live catalog, so a
+// product removed after the order was placed shows "Deleted" instead of a blank/generic tile.
+function OrderThumb({ item, products }) {
+  if (!item) return null;
+  const product = products.find((p) => p.id === item.productId);
+  if (product?.thumb_url) {
+    return <img src={product.thumb_url} alt="" className="admin-order-photo" />;
+  }
+  if (!product) {
+    return (
+      <div className="admin-order-photo img-placeholder" style={{ fontFamily: 'inherit', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--slate)' }}>
+        Deleted
+      </div>
+    );
+  }
+  return <div className="admin-order-photo img-placeholder">{BRAND_INITIALS}</div>;
+}
 
 function b64urlDecode(str) {
   const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -579,6 +597,7 @@ function Landing({ products, loading }) {
 
 function ProductCard({ product, onAdd }) {
   const [added, setAdded] = useState(false);
+  const hasDimensions = (product.dimensions || []).length > 0;
 
   function add() {
     onAdd(product, '');
@@ -589,10 +608,10 @@ function ProductCard({ product, onAdd }) {
   return (
     <div className="card product-card">
       <a href={`#/product/${product.id}`} className="product-thumb" aria-label={`View ${product.name}`}>
-        {product.image_url ? (
-          <img src={product.image_url} alt={product.name} />
+        {product.thumb_url ? (
+          <img src={product.thumb_url} alt={product.name} />
         ) : (
-          <div className="img-placeholder">{BRAND_INITIALS}</div>
+          <div className="img-placeholder no-image">No Image</div>
         )}
         <span className="product-thumb-hint">🔍 View details</span>
       </a>
@@ -607,12 +626,24 @@ function ProductCard({ product, onAdd }) {
             {product.tags.map((t) => <span key={t} className="ptag">{t}</span>)}
           </span>
         )}
-        <span className="price" style={{ marginTop: 'auto' }}>{rupees(product.price_paise)}</span>
+        {hasDimensions && (
+          <span className="size-chips">
+            {product.dimensions.slice(0, 4).map((d) => <span key={d.label} className="size-chip">{d.label}</span>)}
+            {product.dimensions.length > 4 && <span className="size-chip">+{product.dimensions.length - 4} more</span>}
+          </span>
+        )}
+        <span className="price" style={{ marginTop: 'auto' }}>
+          {hasDimensions && 'From '}{rupees(product.price_paise)}
+        </span>
         {!product.in_stock && <span className="badge badge-oos">Out of stock</span>}
         {onAdd && product.in_stock && (
-          <button className="btn btn-sm" onClick={add}>
-            {added ? 'Added ✓' : 'Add to Cart'}
-          </button>
+          hasDimensions ? (
+            <a href={`#/product/${product.id}`} className="btn btn-sm">Choose size</a>
+          ) : (
+            <button className="btn btn-sm" onClick={add}>
+              {added ? 'Added ✓' : 'Add to Cart'}
+            </button>
+          )
         )}
       </div>
     </div>
@@ -626,8 +657,17 @@ function ProductDetails({ id, products, onAdd, session }) {
   const [active, setActive] = useState(0);
   const [message, setMessage] = useState('');
   const [added, setAdded] = useState(false);
+  const [dimIdx, setDimIdx] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
-  useEffect(() => { setActive(0); }, [id]);
+  useEffect(() => { setActive(0); setDimIdx(0); setLightboxOpen(false); }, [id]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    const onKey = (e) => { if (e.key === 'Escape') setLightboxOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxOpen]);
 
   if (!product) {
     return (
@@ -641,10 +681,13 @@ function ProductDetails({ id, products, onAdd, session }) {
     );
   }
 
-  const images = product.images && product.images.length ? product.images : (product.image_url ? [product.image_url] : []);
+  const images = (product.images && product.images.length ? product.images : (product.image_url ? [product.image_url] : [])).map(toPhoto);
+  const dimensions = product.dimensions || [];
+  const selectedDimension = dimensions[dimIdx] || null;
+  const displayPrice = selectedDimension ? selectedDimension.price_paise : product.price_paise;
 
   function add() {
-    onAdd(product, message);
+    onAdd(product, message, selectedDimension);
     setMessage('');
     setAdded(true);
     setTimeout(() => setAdded(false), 1500);
@@ -656,17 +699,16 @@ function ProductDetails({ id, products, onAdd, session }) {
       <div className="product-details">
         <div className="pd-gallery">
           {images.length > 0 ? (
-            <div className="carousel pd-carousel">
-              {images.map((img, i) => (
-                <img key={i} src={img} alt={`${product.name} photo ${i + 1}`} className={i === active ? 'slide active' : 'slide'} />
-              ))}
+            <div className="pd-photo-wrap pd-zoomable" onClick={() => setLightboxOpen(true)}>
+              <img src={images[active].full} alt={`${product.name} photo ${active + 1}`} className="pd-photo" />
+              <span className="pd-zoom-hint">🔍 Click to enlarge</span>
               {images.length > 1 && (
                 <>
-                  <button type="button" className="carousel-arrow prev" onClick={() => setActive((active - 1 + images.length) % images.length)} aria-label="Previous photo">‹</button>
-                  <button type="button" className="carousel-arrow next" onClick={() => setActive((active + 1) % images.length)} aria-label="Next photo">›</button>
+                  <button type="button" className="carousel-arrow prev" onClick={(e) => { e.stopPropagation(); setActive((active - 1 + images.length) % images.length); }} aria-label="Previous photo">‹</button>
+                  <button type="button" className="carousel-arrow next" onClick={(e) => { e.stopPropagation(); setActive((active + 1) % images.length); }} aria-label="Next photo">›</button>
                   <div className="carousel-dots">
                     {images.map((_, i) => (
-                      <button type="button" key={i} className={i === active ? 'dot active' : 'dot'} onClick={() => setActive(i)} aria-label={`Photo ${i + 1}`} />
+                      <button type="button" key={i} className={i === active ? 'dot active' : 'dot'} onClick={(e) => { e.stopPropagation(); setActive(i); }} aria-label={`Photo ${i + 1}`} />
                     ))}
                   </div>
                 </>
@@ -676,15 +718,44 @@ function ProductDetails({ id, products, onAdd, session }) {
             <div className="img-placeholder pd-main-img">{BRAND_INITIALS}</div>
           )}
         </div>
+        {lightboxOpen && images.length > 0 && (
+          <div className="lightbox-backdrop" onClick={() => setLightboxOpen(false)}>
+            <button type="button" className="lightbox-close" onClick={() => setLightboxOpen(false)} aria-label="Close">×</button>
+            <img src={images[active].full} alt={`${product.name} photo ${active + 1}`} className="lightbox-img" onClick={(e) => e.stopPropagation()} />
+            {images.length > 1 && (
+              <>
+                <button type="button" className="carousel-arrow prev" onClick={(e) => { e.stopPropagation(); setActive((active - 1 + images.length) % images.length); }} aria-label="Previous photo">‹</button>
+                <button type="button" className="carousel-arrow next" onClick={(e) => { e.stopPropagation(); setActive((active + 1) % images.length); }} aria-label="Next photo">›</button>
+              </>
+            )}
+          </div>
+        )}
         <div className="pd-info">
           <h1>{product.name}</h1>
-          <span className="price" style={{ fontSize: 20 }}>{rupees(product.price_paise)}</span>
+          <span className="price" style={{ fontSize: 20 }}>{rupees(displayPrice)}</span>
           {!product.in_stock && <span className="badge badge-oos">Out of stock</span>}
           {product.description && <p className="pd-desc">{product.description}</p>}
           {(product.tags || []).length > 0 && (
             <span className="product-tags">
               {product.tags.map((t) => <span key={t} className="ptag">{t}</span>)}
             </span>
+          )}
+          {dimensions.length > 0 && (
+            <div className="field">
+              <label>Size</label>
+              <div className="tag-row">
+                {dimensions.map((d, i) => (
+                  <button
+                    type="button"
+                    key={d.label}
+                    className={i === dimIdx ? 'tag-chip active' : 'tag-chip'}
+                    onClick={() => setDimIdx(i)}
+                  >
+                    {d.label} — {rupees(d.price_paise)}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           {onAdd && product.in_stock && (
             <>
@@ -812,6 +883,9 @@ function Cart({ cart, setCart, session }) {
           <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderBottom: '1px solid var(--foam)', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 180 }}>
               <strong>{item.name}</strong>
+              {item.dimension && (
+                <div style={{ fontSize: 13, color: 'var(--slate)' }}>Size: {item.dimension}</div>
+              )}
               {item.message && (
                 <div style={{ fontSize: 13, color: 'var(--slate)' }}>💬 “{item.message}”</div>
               )}
@@ -911,7 +985,7 @@ function Checkout({ cart, setCart }) {
     setError('');
     setPlacing(true);
     const { ok, data } = await apiPlaceOrder({
-      items: cart.map((i) => ({ productId: i.productId, qty: i.qty, message: i.message })),
+      items: cart.map((i) => ({ productId: i.productId, qty: i.qty, message: i.message, dimension: i.dimension || null })),
       address,
       upi_ref: upiRef,
       transaction_date: transactionDate,
@@ -942,7 +1016,7 @@ function Checkout({ cart, setCart }) {
           {cart.map((item, idx) => (
             <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}>
               <span>
-                {item.name} × {item.qty}
+                {item.name}{item.dimension && ` — Size: ${item.dimension}`} × {item.qty}
                 {item.message && <em style={{ color: 'var(--slate)' }}> — “{item.message}”</em>}
               </span>
               <span>{rupees(item.price_paise * item.qty)}</span>
@@ -1084,6 +1158,9 @@ function MyOrders() {
                       <dt>Product:</dt>
                       <dd>
                         {item.name} × {item.qty}
+                        {item.dimension && (
+                          <div><span className="order-sublabel">Size:</span> {item.dimension}</div>
+                        )}
                         {product && (
                           <div><a href={`#/product/${item.productId}`} className="link-btn">View product</a></div>
                         )}
@@ -1133,14 +1210,7 @@ function MyOrders() {
               </dl>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
                 <span className={`badge badge-${o.status}`}>{o.status.replace('_', ' ')}</span>
-                {(() => {
-                  const firstProduct = products.find((p) => p.id === o.items[0]?.productId);
-                  return firstProduct?.image_url ? (
-                    <img src={firstProduct.image_url} alt="" className="admin-order-photo" />
-                  ) : (
-                    <div className="admin-order-photo img-placeholder">{BRAND_INITIALS}</div>
-                  );
-                })()}
+                <OrderThumb item={o.items[0]} products={products} />
               </div>
             </div>
             {o.status === 'payment_issue' && (
@@ -1363,38 +1433,153 @@ function Profile({ session }) {
 
 const MAX_PRODUCT_PHOTOS = 3;
 
+const EMPTY_DIMENSION = { label: '', price: '' };
+
 const EMPTY_PRODUCT = {
   name: '', description: '', price: '', images: [], tags: '',
   customizable: false, custom_label: 'Your message', in_stock: true, featured: false,
+  hasDimensions: false, dimensions: [],
 };
 
 const parseTags = (raw) =>
   [...new Set(String(raw).split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 12);
 
-// Center-crops the uploaded image to 4:3, scales it down to 800×600 and compresses
-// to a JPEG data URI, so it stays small enough for localStorage (dev) and Postgres (prod).
-function processImage(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const W = 800, H = 600;
-      const scale = Math.max(W / img.width, H / img.height);
-      const sw = W / scale, sh = H / scale;
-      const sx = (img.width - sw) / 2, sy = (img.height - sh) / 2;
-      const canvas = document.createElement('canvas');
-      canvas.width = W;
-      canvas.height = H;
-      canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
+// Every stored product photo is a pair: `thumb` (fixed 4:3 crop, fast-loading —
+// shop cards, admin table) and `full` (the whole original, longest edge capped —
+// product detail page / lightbox). Legacy products saved before this feature just
+// have a single string per photo; toPhoto() normalizes either shape.
+const PRODUCT_PHOTO_MAX_EDGE = 1600;
+const CROP_OUT_W = 800, CROP_OUT_H = 600;
+const CROP_VIEW_W = 320, CROP_VIEW_H = 240; // on-screen crop preview, always 4:3
+
+const toPhoto = (img) => (typeof img === 'string' ? { thumb: img, full: img } : img);
+
+function canvasToJpeg(draw, w, h, quality) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  draw(canvas.getContext('2d'));
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+// Drag-to-reposition cropper for one uploaded photo. Confirms with both a fixed-size
+// crop (what the admin framed) and the full original (untouched, just downscaled).
+const CROP_MAX_ZOOM = 3;
+
+function ImageCropModal({ file, onConfirm, onCancel }) {
+  const [img, setImg] = useState(null);
+  const [url, setUrl] = useState('');
+  const [baseScale, setBaseScale] = useState(1); // scale that exactly covers the crop frame
+  const [zoom, setZoom] = useState(1); // >= 1, multiplies baseScale — zooming in frees up panning on both axes
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [error, setError] = useState('');
+  const dragRef = useRef(null);
+  const scale = baseScale * zoom;
+
+  useEffect(() => {
+    let cancelled = false;
+    setImg(null);
+    setError('');
+    setZoom(1);
+    const objUrl = URL.createObjectURL(file);
+    setUrl(objUrl);
+    const image = new Image();
+    image.onload = () => {
+      if (cancelled) return;
+      const s = Math.max(CROP_VIEW_W / image.width, CROP_VIEW_H / image.height);
+      setBaseScale(s);
+      setOffset({
+        x: Math.max(0, (image.width - CROP_VIEW_W / s) / 2),
+        y: Math.max(0, (image.height - CROP_VIEW_H / s) / 2),
+      });
+      setImg(image);
     };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Could not read image'));
+    image.onerror = () => { if (!cancelled) setError('Could not read that image'); };
+    image.src = objUrl;
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(objUrl);
     };
-    img.src = url;
-  });
+  }, [file]);
+
+  function clamp(o, s) {
+    const maxX = Math.max(0, img.width - CROP_VIEW_W / s);
+    const maxY = Math.max(0, img.height - CROP_VIEW_H / s);
+    return { x: Math.min(Math.max(0, o.x), maxX), y: Math.min(Math.max(0, o.y), maxY) };
+  }
+
+  function onZoomChange(e) {
+    const nextZoom = parseFloat(e.target.value);
+    const nextScale = baseScale * nextZoom;
+    setZoom(nextZoom);
+    setOffset((o) => clamp(o, nextScale));
+  }
+
+  function onPointerDown(e) {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startY: e.clientY, offset };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function onPointerMove(e) {
+    if (!dragRef.current || !img) return;
+    const dx = (e.clientX - dragRef.current.startX) / scale;
+    const dy = (e.clientY - dragRef.current.startY) / scale;
+    setOffset(clamp({ x: dragRef.current.offset.x - dx, y: dragRef.current.offset.y - dy }, scale));
+  }
+  function onPointerUp() { dragRef.current = null; }
+
+  function confirm() {
+    if (!img) return;
+    const cropW = CROP_VIEW_W / scale, cropH = CROP_VIEW_H / scale;
+    const thumb = canvasToJpeg(
+      (ctx) => ctx.drawImage(img, offset.x, offset.y, cropW, cropH, 0, 0, CROP_OUT_W, CROP_OUT_H),
+      CROP_OUT_W, CROP_OUT_H, 0.82
+    );
+    const fullScale = Math.min(1, PRODUCT_PHOTO_MAX_EDGE / Math.max(img.width, img.height));
+    const fw = Math.round(img.width * fullScale), fh = Math.round(img.height * fullScale);
+    const full = canvasToJpeg((ctx) => ctx.drawImage(img, 0, 0, fw, fh), fw, fh, 0.85);
+    onConfirm({ thumb, full, cropped: true });
+  }
+
+  return (
+    <Modal onClose={onCancel} maxWidth={400}>
+      <h2 style={{ marginTop: 0 }}>Position photo</h2>
+      <p style={{ fontSize: 13, color: 'var(--slate)', marginTop: -8 }}>
+        Drag to choose what shows in the product card thumbnail. The full photo is kept too, for the product page.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {img ? (
+        <>
+          <div
+            className="crop-viewport"
+            style={{ width: CROP_VIEW_W, height: CROP_VIEW_H }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerLeave={onPointerUp}
+          >
+            <img
+              src={url}
+              alt="Crop preview"
+              draggable={false}
+              style={{
+                width: img.width * scale, height: img.height * scale,
+                transform: `translate(${-offset.x * scale}px, ${-offset.y * scale}px)`,
+              }}
+            />
+          </div>
+          <div className="field" style={{ marginTop: 12, marginBottom: 0 }}>
+            <label>Zoom {zoom > 1 && '— drag to reposition sideways and up/down'}</label>
+            <input type="range" min={1} max={CROP_MAX_ZOOM} step={0.01} value={zoom} onChange={onZoomChange} />
+          </div>
+        </>
+      ) : !error && <Spinner />}
+      <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+        <button type="button" className="btn btn-sm" disabled={!img} onClick={confirm}>Use this photo</button>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </Modal>
+  );
 }
 
 function Modal({ onClose, children, maxWidth = 560 }) {
@@ -1407,6 +1592,8 @@ function Modal({ onClose, children, maxWidth = 560 }) {
   );
 }
 
+const PRODUCT_SORT_DEFAULT_DIR = { rank: 'asc', name: 'asc', price_paise: 'desc', in_stock: 'desc', created_at: 'desc' };
+
 function AdminProducts() {
   const [products, setProducts] = useState([]);
   const [form, setForm] = useState(EMPTY_PRODUCT);
@@ -1414,13 +1601,55 @@ function AdminProducts() {
   const [formOpen, setFormOpen] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState({ key: 'rank', dir: 'asc' });
+  const [cropQueue, setCropQueue] = useState([]);
 
   const load = useCallback(() => {
     fetchProducts().then(setProducts);
   }, []);
   useEffect(load, [load]);
 
-  const productPage = usePager(products, 10);
+  const q = query.trim().toLowerCase();
+  const filtered = products.filter((p) => {
+    if (!q) return true;
+    return (
+      p.name.toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q) ||
+      (p.tags || []).some((t) => t.includes(q))
+    );
+  });
+  // "rank" is the shop's own display order (as fetched); every other column is a local view-only sort.
+  const sorted = sort.key === 'rank' ? filtered : [...filtered].sort((a, b) => {
+    const mul = sort.dir === 'asc' ? 1 : -1;
+    if (sort.key === 'name') return a.name.localeCompare(b.name) * mul;
+    if (sort.key === 'created_at') return ((a.created_at ? new Date(a.created_at).getTime() : 0) - (b.created_at ? new Date(b.created_at).getTime() : 0)) * mul;
+    if (sort.key === 'in_stock') return ((a.in_stock ? 1 : 0) - (b.in_stock ? 1 : 0)) * mul;
+    return ((a[sort.key] || 0) - (b[sort.key] || 0)) * mul;
+  });
+
+  const productPage = usePager(sorted, 10);
+  const canReorder = sort.key === 'rank' && !q;
+
+  function exportCsv() {
+    downloadFile(`products-${new Date().toISOString().slice(0, 10)}.csv`, productsToCsv(sorted), 'text/csv');
+  }
+
+  // Reordering always operates on the full, unfiltered rank order (products), then
+  // persists the whole new order in one call. Disabled while searching or view-sorted
+  // by another column, since "up/down" wouldn't map onto a visible, contiguous list.
+  async function persistOrder(nextProducts) {
+    setProducts(nextProducts);
+    await reorderProducts(nextProducts.map((p) => p.id));
+  }
+  function moveProduct(id, dir) {
+    const idx = products.findIndex((p) => p.id === id);
+    const swapWith = idx + dir;
+    if (idx < 0 || swapWith < 0 || swapWith >= products.length) return;
+    const next = [...products];
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    persistOrder(next);
+  }
 
   const set = (k) => (e) =>
     setForm({ ...form, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
@@ -1428,22 +1657,45 @@ function AdminProducts() {
   async function save(e) {
     e.preventDefault();
     setError('');
-    const pricePaise = Math.round(parseFloat(form.price) * 100);
-    if (!Number.isInteger(pricePaise) || pricePaise <= 0) {
-      setError('Enter a valid price in rupees');
-      return;
+
+    let dimensions = [];
+    let pricePaise;
+    if (form.hasDimensions) {
+      dimensions = form.dimensions.map((d) => ({
+        label: d.label.trim(),
+        price_paise: Math.round(parseFloat(d.price) * 100),
+      }));
+      if (dimensions.length === 0 || dimensions.some((d) => !d.label || !Number.isInteger(d.price_paise) || d.price_paise <= 0)) {
+        setError('Give every size a name and a valid price');
+        return;
+      }
+      const labels = new Set(dimensions.map((d) => d.label.toLowerCase()));
+      if (labels.size !== dimensions.length) {
+        setError('Size names must be unique');
+        return;
+      }
+      pricePaise = Math.min(...dimensions.map((d) => d.price_paise));
+    } else {
+      pricePaise = Math.round(parseFloat(form.price) * 100);
+      if (!Number.isInteger(pricePaise) || pricePaise <= 0) {
+        setError('Enter a valid price in rupees');
+        return;
+      }
     }
+
     const body = {
       name: form.name,
       description: form.description,
       price_paise: pricePaise,
       images: form.images,
-      image_url: form.images[0] || '',
+      image_url: form.images[0]?.thumb || '',
+      thumb_url: form.images[0]?.cropped ? form.images[0].thumb : '',
       tags: parseTags(form.tags),
       customizable: form.customizable,
       custom_label: form.custom_label,
       in_stock: form.in_stock,
       featured: form.featured,
+      dimensions,
     };
     setBusy(true);
     const { ok, data } = await saveProduct(body, editingId);
@@ -1461,16 +1713,26 @@ function AdminProducts() {
   function startEdit(p) {
     setEditingId(p.id);
     setFormOpen(true);
+    const dimensions = p.dimensions || [];
+    const images = (p.images && p.images.length ? p.images : (p.image_url ? [p.image_url] : [])).map(toPhoto);
+    // Re-mark the cover as "already cropped" only if it still matches the persisted
+    // thumb_url — this is how a genuine crop survives round-tripping through the
+    // backend (which strips the `cropped` flag before storing images).
+    if (images[0] && p.thumb_url && images[0].thumb === p.thumb_url) {
+      images[0] = { ...images[0], cropped: true };
+    }
     setForm({
       name: p.name,
       description: p.description,
       price: String(p.price_paise / 100),
-      images: p.images && p.images.length ? p.images : (p.image_url ? [p.image_url] : []),
+      images,
       tags: (p.tags || []).join(', '),
       customizable: p.customizable,
       custom_label: p.custom_label,
       in_stock: p.in_stock,
       featured: !!p.featured,
+      hasDimensions: dimensions.length > 0,
+      dimensions: dimensions.map((d) => ({ label: d.label, price: String(d.price_paise / 100) })),
     });
   }
 
@@ -1479,6 +1741,7 @@ function AdminProducts() {
     setForm(EMPTY_PRODUCT);
     setError('');
     setFormOpen(true);
+    setCropQueue([]);
   }
 
   function closeForm() {
@@ -1486,6 +1749,7 @@ function AdminProducts() {
     setEditingId(null);
     setForm(EMPTY_PRODUCT);
     setError('');
+    setCropQueue([]);
   }
 
   async function remove(p) {
@@ -1503,13 +1767,89 @@ function AdminProducts() {
         <button type="button" className="btn" onClick={openAddForm}>+ Add Product</button>
       </div>
 
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '0 0 18px' }}>
+        <input
+          type="search"
+          className="shop-search"
+          style={{ maxWidth: 420, flex: '1 1 320px' }}
+          placeholder="Search by name, description or tag…"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); productPage.setPage(0); }}
+        />
+        <button className="btn btn-sm btn-ghost" disabled={sorted.length === 0} onClick={exportCsv}>
+          Export CSV
+        </button>
+        <span style={{ fontSize: 13, color: 'var(--slate)' }}>{sorted.length} of {products.length} products</span>
+      </div>
+      {!canReorder && (
+        <p style={{ fontSize: 12, color: 'var(--slate)', marginTop: -12, marginBottom: 18 }}>
+          Clear the search and sort by Rank to reorder how products appear in the shop.
+        </p>
+      )}
+
       {formOpen && (
       <Modal onClose={closeForm}>
       <form onSubmit={save}>
         <h2 style={{ marginTop: 0 }}>{editingId ? 'Edit product' : 'Add product'}</h2>
         <div className="field"><label>Name *</label><input value={form.name} onChange={set('name')} required placeholder="e.g. Photo frame with custom name" /></div>
         <div className="field"><label>Description</label><textarea value={form.description} onChange={set('description')} rows={2} /></div>
-        <div className="field"><label>Price (₹) *</label><input type="number" step="0.01" min="0.01" value={form.price} onChange={set('price')} required /></div>
+        <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={form.hasDimensions}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              hasDimensions: e.target.checked,
+              dimensions: e.target.checked && f.dimensions.length === 0 ? [{ ...EMPTY_DIMENSION }] : f.dimensions,
+            }))}
+            id="hasDimensions"
+            style={{ width: 'auto' }}
+          />
+          <label htmlFor="hasDimensions" style={{ cursor: 'pointer' }}>This product comes in multiple sizes, each with its own price</label>
+        </div>
+        {form.hasDimensions ? (
+          <div className="field">
+            <label>Sizes &amp; prices *</label>
+            {form.dimensions.map((d, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                <input
+                  placeholder="e.g. 8x10 inches"
+                  value={d.label}
+                  onChange={(e) => setForm((f) => {
+                    const dimensions = [...f.dimensions];
+                    dimensions[i] = { ...dimensions[i], label: e.target.value };
+                    return { ...f, dimensions };
+                  })}
+                  style={{ flex: 2 }}
+                />
+                <input
+                  type="number" step="0.01" min="0.01" placeholder="Price (₹)"
+                  value={d.price}
+                  onChange={(e) => setForm((f) => {
+                    const dimensions = [...f.dimensions];
+                    dimensions[i] = { ...dimensions[i], price: e.target.value };
+                    return { ...f, dimensions };
+                  })}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  type="button" className="btn btn-sm btn-ghost"
+                  onClick={() => setForm((f) => ({ ...f, dimensions: f.dimensions.filter((_, idx) => idx !== i) }))}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              type="button" className="btn btn-sm btn-ghost"
+              onClick={() => setForm((f) => ({ ...f, dimensions: [...f.dimensions, { ...EMPTY_DIMENSION }] }))}
+            >
+              + Add another size
+            </button>
+          </div>
+        ) : (
+          <div className="field"><label>Price (₹) *</label><input type="number" step="0.01" min="0.01" value={form.price} onChange={set('price')} required /></div>
+        )}
         <div className="field">
           <label>Tags (comma-separated)</label>
           <input value={form.tags} onChange={set('tags')} placeholder="e.g. birthday, anniversary, rakhi" />
@@ -1521,7 +1861,7 @@ function AdminProducts() {
             <div className="photo-picker-grid">
               {form.images.map((img, i) => (
                 <div key={i} className={i === 0 ? 'photo-thumb is-cover' : 'photo-thumb'}>
-                  <img src={img} alt={`Photo ${i + 1}`} />
+                  <img src={img.thumb} alt={`Photo ${i + 1}`} />
                   {i === 0 ? (
                     <span className="photo-cover-badge">Cover</span>
                   ) : (
@@ -1554,29 +1894,34 @@ function AdminProducts() {
               type="file"
               accept="image/*"
               multiple
-              onChange={async (e) => {
+              onChange={(e) => {
                 const files = Array.from(e.target.files || []).slice(0, MAX_PRODUCT_PHOTOS - form.images.length);
                 e.target.value = '';
                 if (files.length === 0) return;
-                try {
-                  const dataUris = await Promise.all(files.map(processImage));
-                  setForm((f) => ({ ...f, images: [...f.images, ...dataUris].slice(0, MAX_PRODUCT_PHOTOS) }));
-                } catch {
-                  setError('Could not read one of those images — try different files');
-                }
+                setCropQueue((q) => [...q, ...files]);
               }}
             />
           )}
           <span style={{ fontSize: 12, color: 'var(--slate)' }}>
-            Up to {MAX_PRODUCT_PHOTOS} photos, cropped to 4:3 and compressed automatically. The first photo is the cover shown on product cards — use "Make cover" on any other photo to swap it.
+            Up to {MAX_PRODUCT_PHOTOS} photos. You'll position a crop for the card thumbnail; the full photo is kept too, for the product page. The first photo is the cover shown on product cards — use "Make cover" on any other photo to swap it.
           </span>
         </div>
+        {cropQueue.length > 0 && (
+          <ImageCropModal
+            file={cropQueue[0]}
+            onConfirm={(photo) => {
+              setForm((f) => ({ ...f, images: [...f.images, photo].slice(0, MAX_PRODUCT_PHOTOS) }));
+              setCropQueue((q) => q.slice(1));
+            }}
+            onCancel={() => setCropQueue((q) => q.slice(1))}
+          />
+        )}
         <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={form.customizable} onChange={set('customizable')} id="customizable" style={{ width: 'auto' }} />
           <label htmlFor="customizable" style={{ cursor: 'pointer' }}>Customer can add a personal message</label>
         </div>
         {form.customizable && (
-          <div className="field"><label>Message prompt shown to customer</label><input value={form.custom_label} onChange={set('custom_label')} placeholder="e.g. Name to engrave" /></div>
+          <div className="field"><label>Message prompt shown to customer</label><textarea rows={2} value={form.custom_label} onChange={set('custom_label')} placeholder="e.g. Name to engrave" /></div>
         )}
         <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={form.in_stock} onChange={set('in_stock')} id="in_stock" style={{ width: 'auto' }} />
@@ -1602,23 +1947,40 @@ function AdminProducts() {
       <div className="table-wrap card" style={{ padding: 0 }}>
         <table>
           <thead>
-            <tr><th>Image</th><th>Name</th><th>Price</th><th>Tags</th><th>Custom</th><th>Stock</th><th>Actions</th></tr>
+            <tr>
+              <SortTh label="Rank" sortKey="rank" sort={sort} setSort={setSort} sortDefaults={PRODUCT_SORT_DEFAULT_DIR} />
+              <th>Image</th>
+              <SortTh label="Name" sortKey="name" sort={sort} setSort={setSort} sortDefaults={PRODUCT_SORT_DEFAULT_DIR} />
+              <SortTh label="Price" sortKey="price_paise" sort={sort} setSort={setSort} sortDefaults={PRODUCT_SORT_DEFAULT_DIR} />
+              <th>Tags</th>
+              <th>Custom</th>
+              <SortTh label="Stock" sortKey="in_stock" sort={sort} setSort={setSort} sortDefaults={PRODUCT_SORT_DEFAULT_DIR} />
+              <th>Actions</th>
+            </tr>
           </thead>
           <tbody>
             {productPage.slice.map((p) => (
               <tr key={p.id}>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <button className="btn btn-sm btn-ghost" disabled={!canReorder} title="Move up" onClick={() => moveProduct(p.id, -1)}>▲</button>{' '}
+                  <button className="btn btn-sm btn-ghost" disabled={!canReorder} title="Move down" onClick={() => moveProduct(p.id, 1)}>▼</button>
+                </td>
                 <td>
-                  {p.image_url
-                    ? <img src={p.image_url} alt="" style={{ width: 56, height: 42, objectFit: 'cover', borderRadius: 6 }} />
+                  {p.thumb_url
+                    ? <img src={p.thumb_url} alt="" style={{ width: 56, height: 42, objectFit: 'cover', borderRadius: 6 }} />
                     : '—'}
                 </td>
                 <td>{p.name}</td>
-                <td>{rupees(p.price_paise)}</td>
+                <td>
+                  {(p.dimensions || []).length > 0
+                    ? <>{rupees(p.price_paise)}+ <span style={{ fontSize: 11, color: 'var(--slate)' }}>({p.dimensions.length} sizes)</span></>
+                    : rupees(p.price_paise)}
+                </td>
                 <td>{(p.tags || []).join(', ') || '—'}</td>
                 <td>{p.customizable ? `✓ (${p.custom_label})` : '—'}</td>
                 <td>
                   <div>{p.in_stock ? <span className="badge badge-fulfilled">in stock</span> : <span className="badge badge-oos">out of stock</span>}</div>
-                  {p.featured && <div style={{ marginTop: 4 }}><span className="badge badge-fulfilled">★ featured</span></div>}
+                  {p.featured && <div style={{ marginTop: 4 }}><span className="badge badge-fulfilled">featured</span></div>}
                 </td>
                 <td style={{ whiteSpace: 'nowrap' }}>
                   <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => startEdit(p)}>Edit</button>{' '}
@@ -1626,13 +1988,13 @@ function AdminProducts() {
                 </td>
               </tr>
             ))}
-            {products.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--slate)' }}>No products yet</td></tr>
+            {sorted.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--slate)' }}>{products.length === 0 ? 'No products yet' : 'No products match your search'}</td></tr>
             )}
           </tbody>
         </table>
       </div>
-      <Pager page={productPage.page} pageCount={productPage.pageCount} setPage={productPage.setPage} label={`${products.length} products`} />
+      <Pager page={productPage.page} pageCount={productPage.pageCount} setPage={productPage.setPage} label={`${sorted.length} products`} />
     </div>
   );
 }
@@ -1641,7 +2003,7 @@ function AdminProducts() {
 
 const ORDER_CSV_COLUMNS = [
   'id', 'order_no', 'created_at', 'status', 'user_name', 'user_email', 'items_summary',
-  'total_rupees', 'upi_ref', 'paid_at', 'courier', 'tracking_id', 'shipped_at', 'address',
+  'total_rupees', 'upi_ref', 'paid_at', 'courier', 'tracking_id', 'shipped_at', 'status_note', 'address',
 ];
 
 function csvEscape(value) {
@@ -1661,9 +2023,30 @@ function ordersToCsv(orders) {
   for (const o of orders) {
     lines.push([
       o.id, o.order_no ?? '', o.created_at, o.status, o.user_name, o.user_email,
-      o.items.map((i) => `${i.name} x${i.qty}${i.message ? ` (${i.message})` : ''}`).join('; '),
-      (o.total_paise / 100).toFixed(2), o.upi_ref, o.paid_at || '', o.courier || '', o.tracking_id || '', o.shipped_at || '',
+      o.items.map((i) => `${i.name}${i.dimension ? ` (Size: ${i.dimension})` : ''} x${i.qty}${i.message ? ` (${i.message})` : ''}`).join('; '),
+      (o.total_paise / 100).toFixed(2), o.upi_ref, o.paid_at || '', o.courier || '', o.tracking_id || '', o.shipped_at || '', o.status_note || '',
       addressToLines(o.address),
+    ].map(csvEscape).join(','));
+  }
+  return lines.join('\r\n');
+}
+
+const PRODUCT_CSV_COLUMNS = [
+  'id', 'name', 'description', 'price_rupees', 'sizes', 'tags',
+  'customizable', 'custom_message_prompt', 'in_stock', 'featured', 'photo_count', 'created_at',
+];
+
+// Flat, spreadsheet-friendly export — no raw JSON or base64 image data, just readable text.
+function productsToCsv(products) {
+  const lines = [PRODUCT_CSV_COLUMNS.join(',')];
+  for (const p of products) {
+    const sizes = (p.dimensions || []).map((d) => `${d.label}: ${rupees(d.price_paise)}`).join('; ');
+    const photoCount = (p.images && p.images.length) || (p.image_url ? 1 : 0);
+    lines.push([
+      p.id, p.name, p.description || '', (p.price_paise / 100).toFixed(2), sizes,
+      (p.tags || []).join('; '),
+      p.customizable ? 'Yes' : 'No', p.customizable ? (p.custom_label || '') : '',
+      p.in_stock ? 'Yes' : 'No', p.featured ? 'Yes' : 'No', photoCount, p.created_at || '',
     ].map(csvEscape).join(','));
   }
   return lines.join('\r\n');
@@ -1757,26 +2140,26 @@ function AdminOrders() {
 
   async function removeOrders(ids) {
     if (ids.length === 0) return;
-    const label = ids.length === 1 ? 'this fulfilled order' : `${ids.length} fulfilled orders`;
+    const label = ids.length === 1 ? 'this order' : `${ids.length} orders`;
     if (!window.confirm(`Permanently delete ${label}? This cannot be undone — export a CSV backup first if you need one.`)) return;
     setBusy(true);
     const { ok, data } = await deleteOrders(ids);
     setBusy(false);
     setNotice(ok
-      ? `Deleted ${data.deleted} order(s).${data.skipped ? ` ${data.skipped} skipped (only fulfilled orders can be deleted).` : ''}`
+      ? `Deleted ${data.deleted} order(s).${data.skipped ? ` ${data.skipped} skipped (only fulfilled/cancelled orders can be deleted).` : ''}`
       : data.error || 'Delete failed');
     load();
   }
 
-  // Only fulfilled orders can be deleted, so only they are selectable.
-  const deletable = orders.filter((o) => o.status === 'fulfilled');
+  // Only terminal-state orders (fulfilled/cancelled) can be deleted, so only they are selectable.
+  const deletable = orders.filter((o) => TERMINAL_ORDER_STATUSES.includes(o.status));
   const allSelected = deletable.length > 0 && selected.size === deletable.length;
 
   return (
     <div className="page">
       <h1>Admin · Orders</h1>
-      <div className="tabs" style={{ maxWidth: 680 }}>
-        {[['pending', 'Pending'], ['payment_issue', 'Payment Issue'], ['shipped', 'Shipped'], ['fulfilled', 'Fulfilled'], ['all', 'All']].map(([f, label]) => (
+      <div className="tabs" style={{ maxWidth: 900 }}>
+        {[['pending', 'Pending'], ['payment_issue', 'Payment Issue'], ['shipped', 'Shipped'], ['fulfilled', 'Fulfilled'], ['cancelled', 'Cancelled'], ['all', 'All']].map(([f, label]) => (
           <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>
             {label}
           </button>
@@ -1793,7 +2176,7 @@ function AdminOrders() {
               checked={allSelected}
               onChange={() => setSelected(allSelected ? new Set() : new Set(deletable.map((o) => o.id)))}
             />
-            Select all fulfilled
+            Select all deletable
           </label>
         )}
         {selected.size > 0 && (
@@ -1810,7 +2193,7 @@ function AdminOrders() {
         {slice.map((o) => (
           <div key={o.id} className="card" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-              {o.status === 'fulfilled' && (
+              {TERMINAL_ORDER_STATUSES.includes(o.status) && (
                 <input
                   type="checkbox"
                   checked={selected.has(o.id)}
@@ -1841,6 +2224,9 @@ function AdminOrders() {
                       <dt>Product:</dt>
                       <dd>
                         {item.name} × {item.qty}
+                        {item.dimension && (
+                          <div><span className="order-sublabel">Size:</span> {item.dimension}</div>
+                        )}
                         {product && (
                           <div><a href={`#/product/${item.productId}`} className="link-btn">View product</a></div>
                         )}
@@ -1881,6 +2267,12 @@ function AdminOrders() {
                     </dd>
                   </div>
                 )}
+                {TERMINAL_ORDER_STATUSES.includes(o.status) && o.status_note && (
+                  <div className="order-row">
+                    <dt>Note:</dt>
+                    <dd>{o.status_note}</dd>
+                  </div>
+                )}
                 <div className="order-row">
                   <dt>Total:</dt>
                   <dd><strong style={{ color: 'var(--ocean)' }}>{rupees(o.total_paise)}</strong></dd>
@@ -1888,19 +2280,14 @@ function AdminOrders() {
               </dl>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
                 <span className={`badge badge-${o.status}`}>{o.status.replace('_', ' ')}</span>
-                {(() => {
-                  const firstProduct = products.find((p) => p.id === o.items[0]?.productId);
-                  return firstProduct?.image_url ? (
-                    <img src={firstProduct.image_url} alt="" className="admin-order-photo" />
-                  ) : (
-                    <div className="admin-order-photo img-placeholder">{BRAND_INITIALS}</div>
-                  );
-                })()}
+                <OrderThumb item={o.items[0]} products={products} />
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
               <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" className="btn btn-sm btn-ghost" onClick={() => printAddress(o)}>Print Address</button>
+                {(o.status === 'pending' || o.status === 'payment_issue') && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => printAddress(o)}>Print Address</button>
+                )}
                 {o.status === 'pending' && (
                   <>
                     <button className="btn btn-sm" disabled={busy} onClick={() => { setShipError(''); setShipping({ orderId: o.id, courier: 'Bluedart', tracking_id: '', shipped_date: todayStr() }); }}>
@@ -1912,11 +2299,27 @@ function AdminOrders() {
                   </>
                 )}
                 {o.status === 'payment_issue' && (
-                  <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => setStatus(o, 'pending')}>{busy ? 'Updating…' : 'Back to pending'}</button>
+                  <>
+                    <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => setStatus(o, 'pending')}>{busy ? 'Updating…' : 'Back to pending'}</button>
+                    <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => {
+                      if (!window.confirm('Cancel this order?')) return;
+                      setStatus(o, 'cancelled', { note: window.prompt('Reason for cancellation (optional):') || '' });
+                    }}>
+                      {busy ? 'Updating…' : 'Cancel order'}
+                    </button>
+                  </>
+                )}
+                {o.status === 'cancelled' && (
+                  <>
+                    <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => setStatus(o, 'pending')}>{busy ? 'Updating…' : 'Back to pending'}</button>
+                    <button className="btn btn-sm btn-danger" disabled={busy} onClick={() => removeOrders([o.id])}>
+                      Delete
+                    </button>
+                  </>
                 )}
                 {o.status === 'shipped' && (
                   <>
-                    <button className="btn btn-sm" disabled={busy} onClick={() => setStatus(o, 'fulfilled')}>{busy ? 'Updating…' : 'Mark fulfilled ✓'}</button>
+                    <button className="btn btn-sm" disabled={busy} onClick={() => setStatus(o, 'fulfilled', { note: window.prompt('Add a note (optional):') || '' })}>{busy ? 'Updating…' : 'Mark fulfilled ✓'}</button>
                     <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => setStatus(o, 'pending')}>{busy ? 'Updating…' : 'Back to pending'}</button>
                   </>
                 )}
@@ -2087,14 +2490,14 @@ function stopImpersonation() {
 // Numeric columns default to descending (highest first); text/date columns default to ascending.
 const USER_SORT_DEFAULT_DIR = { name: 'asc', created_at: 'desc', order_count: 'desc', spent_paise: 'desc', last_login: 'desc' };
 
-function SortTh({ label, sortKey, sort, setSort }) {
+function SortTh({ label, sortKey, sort, setSort, sortDefaults = USER_SORT_DEFAULT_DIR }) {
   const active = sort.key === sortKey;
   return (
     <th
       style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
       onClick={() => setSort(active
         ? { key: sortKey, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
-        : { key: sortKey, dir: USER_SORT_DEFAULT_DIR[sortKey] || 'asc' })}
+        : { key: sortKey, dir: sortDefaults[sortKey] || 'asc' })}
     >
       {label}{active ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
     </th>
@@ -2193,6 +2596,8 @@ function AdminMarketing() {
   const [products, setProducts] = useState([]);
   const [selectedUsers, setSelectedUsers] = useState(() => new Set());
   const [selectedProducts, setSelectedProducts] = useState(() => new Set());
+  const [productQuery, setProductQuery] = useState('');
+  const [productDropdownOpen, setProductDropdownOpen] = useState(false);
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [userQuery, setUserQuery] = useState('');
@@ -2221,17 +2626,11 @@ function AdminMarketing() {
     });
 
   const { page: userPage, setPage: setUserPage, pageCount: userPageCount, slice: userSlice } = usePager(filteredUsers, 10);
-  const { page: productPage, setPage: setProductPage, pageCount: productPageCount, slice: productSlice } = usePager(products, 8);
 
   function toggleUser(email) {
     const next = new Set(selectedUsers);
     if (next.has(email)) next.delete(email); else next.add(email);
     setSelectedUsers(next);
-  }
-  function toggleProduct(id) {
-    const next = new Set(selectedProducts);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    setSelectedProducts(next);
   }
 
   const allFilteredSelected = filteredUsers.length > 0 && filteredUsers.every((u) => selectedUsers.has(u.email));
@@ -2324,27 +2723,60 @@ function AdminMarketing() {
         <h2>2. Products to feature</h2>
         <div className="card" style={{ marginBottom: 24 }}>
           {products.length === 0 ? <p className="empty">No products yet</p> : (
-            <>
-              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
-                {productSlice.map((p) => (
-                  <label
-                    key={p.id}
-                    className={selectedProducts.has(p.id) ? 'addr-option active' : 'addr-option'}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <input type="checkbox" checked={selectedProducts.has(p.id)} onChange={() => toggleProduct(p.id)} />
-                    {p.image_url
-                      ? <img src={p.image_url} alt="" style={{ width: 44, height: 34, objectFit: 'cover', borderRadius: 4 }} />
-                      : <div className="img-placeholder" style={{ width: 44, height: 34, fontSize: 14, borderRadius: 4 }}>{BRAND_INITIALS}</div>}
-                    <span>
-                      <strong>{p.name}</strong>
-                      <em>{rupees(p.price_paise)}</em>
+            <div className="field" style={{ marginBottom: 0, position: 'relative' }}>
+              <label>Products ({selectedProducts.size} selected)</label>
+              <input
+                type="text"
+                placeholder="Search and add a product…"
+                value={productQuery}
+                onChange={(e) => { setProductQuery(e.target.value); setProductDropdownOpen(true); }}
+                onFocus={() => setProductDropdownOpen(true)}
+                onBlur={() => setTimeout(() => setProductDropdownOpen(false), 150)}
+              />
+              {productDropdownOpen && (() => {
+                const q = productQuery.trim().toLowerCase();
+                const options = products
+                  .filter((p) => !selectedProducts.has(p.id) && (!q || p.name.toLowerCase().includes(q)))
+                  .slice(0, 30);
+                return (
+                  <div className="dropdown-panel">
+                    {options.length === 0 ? (
+                      <div className="dropdown-empty">No matching products</div>
+                    ) : options.map((p) => (
+                      <button
+                        type="button"
+                        key={p.id}
+                        className="dropdown-option"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setSelectedProducts((s) => new Set(s).add(p.id));
+                          setProductQuery('');
+                        }}
+                      >
+                        {p.name} — {rupees(p.price_paise)}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+              {selectedProducts.size > 0 && (
+                <div className="size-chips" style={{ marginTop: 10 }}>
+                  {products.filter((p) => selectedProducts.has(p.id)).map((p) => (
+                    <span key={p.id} className="size-chip" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {p.name}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProducts((s) => { const next = new Set(s); next.delete(p.id); return next; })}
+                        aria-label={`Remove ${p.name}`}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontSize: 14, lineHeight: 1, padding: 0 }}
+                      >
+                        ×
+                      </button>
                     </span>
-                  </label>
-                ))}
-              </div>
-              <Pager page={productPage} pageCount={productPageCount} setPage={setProductPage} label={`${products.length} products`} />
-            </>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -2429,9 +2861,11 @@ export default function App() {
     localStorage.setItem(CART_KEY, JSON.stringify(next));
   };
 
-  function addToCart(product, message) {
+  function addToCart(product, message, dimension) {
+    const price_paise = dimension ? dimension.price_paise : product.price_paise;
+    const dimLabel = dimension ? dimension.label : null;
     const existing = cart.findIndex(
-      (i) => i.productId === product.id && (i.message || '') === (message || '')
+      (i) => i.productId === product.id && (i.message || '') === (message || '') && (i.dimension || null) === dimLabel
     );
     if (existing >= 0) {
       const next = [...cart];
@@ -2440,7 +2874,7 @@ export default function App() {
     } else {
       setCart([
         ...cart,
-        { productId: product.id, name: product.name, price_paise: product.price_paise, qty: 1, message: message || '' },
+        { productId: product.id, name: product.name, price_paise, dimension: dimLabel, qty: 1, message: message || '' },
       ]);
     }
   }

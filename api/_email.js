@@ -123,7 +123,7 @@ export async function sendShippedEmail(email, { order_no, name, items, courier, 
         <tr>
           <td style="padding:8px 0;border-bottom:1px solid ${COLOR.foam}" width="56">${img}</td>
           <td style="padding:8px 0 8px 14px;border-bottom:1px solid ${COLOR.foam};color:${COLOR.ink};font-size:14px">
-            ${escapeHtml(i.name)}<br/>
+            ${escapeHtml(i.name)}${i.dimension ? ` <span style="color:${COLOR.slate}">(Size: ${escapeHtml(i.dimension)})</span>` : ''}<br/>
             <span style="color:${COLOR.slate};font-size:12px">Qty: ${Number(i.qty) || 1}</span>
           </td>
         </tr>

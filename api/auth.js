@@ -1,4 +1,4 @@
-import { randomUUID, randomInt } from 'crypto';
+import { randomInt } from 'crypto';
 import { db, ensureSchema } from './_db.js';
 import { hashPassword, checkPassword, createToken, isAdminEmail, isBuiltInAdmin } from './_auth.js';
 import { sendVerificationEmail } from './_email.js';
@@ -61,7 +61,7 @@ async function authHandler(req, res) {
     if (existing) {
       await sql`UPDATE users SET name = ${name}, password_hash = ${passwordHash} WHERE email = ${email}`;
     } else {
-      await sql`INSERT INTO users (id, email, name, password_hash) VALUES (${randomUUID()}, ${email}, ${name}, ${passwordHash})`;
+      await sql`INSERT INTO users (email, name, password_hash) VALUES (${email}, ${name}, ${passwordHash})`;
     }
     await issueCode(sql, email);
     log('signup', { email });
@@ -132,12 +132,12 @@ async function authHandler(req, res) {
     if (isBuiltInAdmin(email, password)) {
       let [admin] = await sql`SELECT id, email, name FROM users WHERE email = ${email}`;
       if (!admin) {
-        const id = randomUUID();
-        await sql`
-          INSERT INTO users (id, email, name, password_hash, verified, last_login)
-          VALUES (${id}, ${email}, ${'Admin'}, ${hashPassword(password)}, TRUE, NOW())
+        const [created] = await sql`
+          INSERT INTO users (email, name, password_hash, verified, last_login)
+          VALUES (${email}, ${'Admin'}, ${hashPassword(password)}, TRUE, NOW())
+          RETURNING id
         `;
-        admin = { id, email, name: 'Admin' };
+        admin = { id: created.id, email, name: 'Admin' };
       } else {
         await sql`UPDATE users SET verified = TRUE, last_login = NOW() WHERE id = ${admin.id}`;
       }
