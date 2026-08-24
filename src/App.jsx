@@ -75,6 +75,16 @@ function loadCart() {
 const rupees = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
+// Lead time shown on product pages — every piece is hand-poured to order.
+const LEAD_TIME = 'Made to order · ships in 5–7 days';
+
+// Contact details for the footer / customer questions.
+export const CONTACT = {
+  email: 'hello@lagomdezign.com',
+  instagram: 'https://instagram.com/lagom.dezign',
+  whatsapp: 'https://wa.me/919000000000',
+};
+
 // ─── PAGINATION ───────────────────────────────────────────────────────────────
 
 const DEFAULT_PAGE_SIZE = 10;
@@ -107,6 +117,49 @@ function Spinner({ inline, small }) {
     <div className={inline ? 'spinner-wrap spinner-inline' : 'spinner-wrap'}>
       <div className={small ? 'spinner spinner-sm' : 'spinner'} role="status" aria-label="Loading" />
     </div>
+  );
+}
+
+// ─── TOAST (added-to-cart feedback) ───────────────────────────────────────────
+
+function Toast({ message }) {
+  if (!message) return null;
+  return <div className="toast" role="status">{message}</div>;
+}
+
+// ─── FOOTER ───────────────────────────────────────────────────────────────────
+
+function Footer() {
+  return (
+    <footer className="site-footer">
+      <div className="footer-inner">
+        <div className="footer-col">
+          <span className="brand footer-brand">{BRAND_FIRST}{BRAND_REST && <> <em>{BRAND_REST}</em></>}</span>
+          <p>Souvenirs that flow with your memories — hand-poured resin keepsakes, made to order with love.</p>
+        </div>
+        <div className="footer-col">
+          <h4>Shop</h4>
+          <a href="#/shop">The Collection</a>
+          <a href="#/cart">Your Cart</a>
+          <a href="#/orders">My Orders</a>
+        </div>
+        <div className="footer-col">
+          <h4>Help</h4>
+          <a href="#/shop">Shipping &amp; Delivery</a>
+          <a href="#/shop">Returns &amp; Refunds</a>
+          <a href="#/auth">My Account</a>
+        </div>
+        <div className="footer-col">
+          <h4>Get in touch</h4>
+          <a href={`mailto:${CONTACT.email}`}>{CONTACT.email}</a>
+          <a href={CONTACT.whatsapp} target="_blank" rel="noreferrer">WhatsApp us</a>
+          <a href={CONTACT.instagram} target="_blank" rel="noreferrer">Instagram</a>
+        </div>
+      </div>
+      <div className="footer-bottom">
+        © {new Date().getFullYear()} {APP_NAME} · Handmade in India
+      </div>
+    </footer>
   );
 }
 
@@ -270,7 +323,7 @@ const carouselImages = Object.entries(
   .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
   .map(([, url]) => url);
 
-function Carousel() {
+function Carousel({ products = [] }) {
   const [index, setIndex] = useState(0);
   const count = carouselImages.length;
 
@@ -282,13 +335,30 @@ function Carousel() {
 
   if (count === 0) return null;
 
+  // A slide links to its product when the asset filename starts with the product
+  // id (e.g. `9-bookstand.jpg` → #/product/9). Unmatched slides just aren't clickable.
+  const slideFor = (src) => {
+    const file = src.split('/').pop() || '';
+    const id = file.match(/^(\d+)-/)?.[1];
+    const product = id && products.find((p) => String(p.id) === id);
+    return product ? { href: `#/product/${product.id}`, name: product.name } : null;
+  };
+
   return (
     <div className="page" style={{ paddingBottom: 48 }}>
       <h2 style={{ textAlign: 'center' }}>Signature Pieces</h2>
       <div className="carousel">
-        {carouselImages.map((src, i) => (
-          <img key={src} src={src} alt="" className={i === index ? 'slide active' : 'slide'} />
-        ))}
+        {carouselImages.map((src, i) => {
+          const slide = slideFor(src);
+          return slide ? (
+            <a key={src} href={slide.href} className={i === index ? 'slide active slide-link' : 'slide slide-link'} aria-label={`View ${slide.name}`}>
+              <img src={src} alt={slide.name} />
+              <span className="slide-caption">{slide.name}</span>
+            </a>
+          ) : (
+            <img key={src} src={src} alt="" className={i === index ? 'slide active' : 'slide'} />
+          );
+        })}
         {count > 1 && (
           <>
             <button className="carousel-arrow prev" onClick={() => setIndex((index - 1 + count) % count)} aria-label="Previous">‹</button>
@@ -552,7 +622,7 @@ function Landing({ products, loading }) {
         </button>
         <Waves />
       </section>
-      <Carousel />
+      <Carousel products={products} />
       {loading ? (
         <div className="page">
           <h2 style={{ textAlign: 'center' }}>Featured Keepsakes</h2>
@@ -598,6 +668,19 @@ function Landing({ products, loading }) {
 function ProductCard({ product, onAdd }) {
   const [added, setAdded] = useState(false);
   const hasDimensions = (product.dimensions || []).length > 0;
+  const [ratingSummary, setRatingSummary] = useState(null);
+
+  // Approved-review average for this product (null while loading / no reviews).
+  useEffect(() => {
+    let alive = true;
+    fetchReviews(product.id).then((reviews) => {
+      if (!alive) return;
+      if (!reviews || reviews.length === 0) return setRatingSummary(null);
+      const avg = reviews.reduce((s, r) => s + r.rating, 0) / reviews.length;
+      setRatingSummary({ avg: Math.round(avg), count: reviews.length });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [product.id]);
 
   function add() {
     onAdd(product, '');
@@ -617,9 +700,15 @@ function ProductCard({ product, onAdd }) {
       </a>
       <div className="body">
         <strong>{product.name}</strong>
+        {ratingSummary && (
+          <span className="card-rating">
+            <Stars value={ratingSummary.avg} />
+            <span className="card-rating-count">({ratingSummary.count})</span>
+          </span>
+        )}
         {product.description && <span className="desc">{product.description}</span>}
         <a href={`#/product/${product.id}`} className="link-btn" style={{ alignSelf: 'flex-start' }}>
-          See details &amp; reviews →
+          View details →
         </a>
         {(product.tags || []).length > 0 && (
           <span className="product-tags">
@@ -735,6 +824,7 @@ function ProductDetails({ id, products, onAdd, session }) {
           <span className="price" style={{ fontSize: 20 }}>{rupees(displayPrice)}</span>
           {!product.in_stock && <span className="badge badge-oos">Out of stock</span>}
           {product.description && <p className="pd-desc">{product.description}</p>}
+          <p className="pd-lead-time">⏱ {LEAD_TIME}</p>
           {(product.tags || []).length > 0 && (
             <span className="product-tags">
               {product.tags.map((t) => <span key={t} className="ptag">{t}</span>)}
@@ -774,6 +864,13 @@ function ProductDetails({ id, products, onAdd, session }) {
               </button>
             </>
           )}
+          {product.customizable && product.in_stock && (
+            <p className="pd-note">✨ Personalised by hand — double-check spelling before ordering.</p>
+          )}
+          <div className="pd-care">
+            <span>Care: wipe clean with a dry cloth · avoid direct sunlight &amp; soaking</span>
+            <span>Questions? <a href={CONTACT.whatsapp} target="_blank" rel="noreferrer" style={{ color: 'var(--g2)', fontWeight: 600 }}>WhatsApp us</a></span>
+          </div>
         </div>
       </div>
       <h2>Reviews</h2>
@@ -836,6 +933,13 @@ function Shop({ products, loading, onAdd }) {
               </div>
             )}
           </div>
+          {(query.trim() || tag) && (
+            <p className="search-count">
+              {filtered.length} result{filtered.length === 1 ? '' : 's'}
+              {query.trim() && <> for “{query.trim()}”</>}
+              {tag && <> in <strong>{tag}</strong></>}
+            </p>
+          )}
           {filtered.length === 0 ? (
             <p className="empty">Nothing matches — try another event or search term.</p>
           ) : (
@@ -2867,6 +2971,7 @@ export default function App() {
   const [cart, setCartState] = useState(loadCart);
   const [products, setProducts] = useState([]);
   const [productsLoaded, setProductsLoaded] = useState(false);
+  const [toast, setToast] = useState('');
 
   useEffect(() => {
     document.title = `${APP_NAME} — Souvenirs that flow with your memories`;
@@ -2898,6 +3003,10 @@ export default function App() {
         { productId: product.id, name: product.name, price_paise, dimension: dimLabel, qty: 1, message: message || '' },
       ]);
     }
+    // Global "added to cart" confirmation — visible no matter where the add happened.
+    setToast(`✓ ${product.name} added to cart`);
+    clearTimeout(addToCart._t);
+    addToCart._t = setTimeout(() => setToast(''), 2500);
   }
 
   function logout() {
@@ -2984,6 +3093,8 @@ export default function App() {
         )}
       </nav>
       {content}
+      <Toast message={toast} />
+      <Footer />
     </>
   );
 }
