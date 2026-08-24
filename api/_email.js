@@ -5,7 +5,7 @@
 
 import nodemailer from 'nodemailer';
 
-const APP_NAME = process.env.APP_NAME || 'Moment Kart';
+const APP_NAME = process.env.APP_NAME || 'Lagom.Dezign';
 
 let transporter;
 function getTransporter() {

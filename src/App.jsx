@@ -17,7 +17,7 @@ const UPI_ID = (typeof __UPI_ID__ !== 'undefined' && __UPI_ID__) || 'momentkart@
 const buildUpiLink = (totalPaise) =>
   `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=${encodeURIComponent(APP_NAME)}&am=${(totalPaise / 100).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`${APP_NAME} order`)}`;
 // Shop display name, configurable via APP_NAME in .env.local (dev) / Vercel env vars (prod).
-const APP_NAME = (typeof __APP_NAME__ !== 'undefined' && __APP_NAME__) || 'Moment Kart';
+const APP_NAME = (typeof __APP_NAME__ !== 'undefined' && __APP_NAME__) || 'Lagom.Dezign';
 const [BRAND_FIRST, ...BRAND_REST_WORDS] = APP_NAME.split(' ');
 const BRAND_REST = BRAND_REST_WORDS.join(' ');
 const BRAND_INITIALS = APP_NAME.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();

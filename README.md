@@ -1,4 +1,4 @@
-# 🌊 Moment Kart
+# 🌊 Lagom.Dezign
 
 A water-themed souvenir shop: customers personalise keepsakes, pay via UPI, and track orders. A single admin manages the catalog, orders, and reviews. Vite + React SPA with Vercel serverless functions and Neon Postgres.
 
@@ -8,7 +8,7 @@ Same names in `.env.local` (dev) and the Vercel dashboard (production):
 
 | Variable | Purpose |
 | --- | --- |
-| `APP_NAME` | Shop display name (defaults to `Moment Kart`) |
+| `APP_NAME` | Shop display name (defaults to `Lagom.Dezign`) |
 | `ADMIN_EMAIL` | Admin login email — also the sender of all outgoing email |
 | `ADMIN_PASSWORD` | Admin login password |
 | `ADMIN_UPI_ID` | UPI id shown at checkout (embedded at build time) |
