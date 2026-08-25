@@ -799,3 +799,46 @@ th {
 @media (max-width: 720px) {
   .footer-inner { grid-template-columns: 1fr 1fr; gap: 24px; padding: 36px 16px 24px; }
 }
+
+/* --- Breadcrumbs ----------------------------------------------------------- */
+.breadcrumbs { padding: 12px 20px 0; font-size: 13px; }
+.breadcrumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.breadcrumbs li { display: flex; align-items: center; gap: 6px; }
+.breadcrumbs a { color: var(--slate); text-decoration: none; }
+.breadcrumbs a:hover { color: var(--primary); text-decoration: underline; }
+.crumb-sep { color: var(--muted); }
+.breadcrumbs [aria-current='page'] { color: var(--deep); font-weight: 600; }
+
+/* --- FAQ ------------------------------------------------------------------- */
+.faq-section { max-width: 720px; margin: 0 auto; padding-top: 40px; }
+.faq-list { margin-top: 18px; display: grid; gap: 10px; }
+.faq-item { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.faq-q {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 14px 16px; background: none; border: none; cursor: pointer;
+  font: inherit; font-weight: 600; color: var(--deep); text-align: left;
+}
+.faq-q span { color: var(--accent); font-size: 18px; line-height: 1; }
+.faq-a { padding: 0 16px 14px; color: var(--slate); font-size: 14px; line-height: 1.6; }
+
+/* --- Sticky mobile CTA ----------------------------------------------------- */
+.sticky-mobile-cta { display: none; }
+
+@media (max-width: 700px) {
+  .sticky-mobile-cta {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+    display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(8px);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 16px rgba(42, 36, 64, 0.08);
+  }
+  .smc-btn {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 11px 8px; border-radius: 999px; text-decoration: none;
+    font-weight: 600; font-size: 14px; color: var(--deep);
+    background: var(--tint-1); border: 1px solid var(--line);
+  }
+  .smc-primary { background: linear-gradient(135deg, var(--g1), var(--g3)); color: #fff; border: none; }
+  .smc-primary .cart-count { background: #fff; color: var(--g1); top: auto; }
+  body { padding-bottom: 72px; }
+}

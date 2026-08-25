@@ -28,7 +28,7 @@ function OrderThumb({ item, products }) {
   if (!item) return null;
   const product = products.find((p) => p.id === item.productId);
   if (product?.thumb_url) {
-    return <img src={product.thumb_url} alt="" className="admin-order-photo" />;
+    return <img src={product.thumb_url} alt={product.name} className="admin-order-photo" />;
   }
   if (!product) {
     return (
@@ -84,6 +84,178 @@ export const CONTACT = {
   instagram: 'https://instagram.com/lagom.dezign',
   whatsapp: 'https://wa.me/919000000000',
 };
+
+// ─── SEO HELPERS (meta description + structured data) ────────────────────────
+
+// Sets <title> and the meta description for the current route.
+function useMeta(title, description) {
+  useEffect(() => {
+    if (title) document.title = title;
+    if (!description) return;
+    let tag = document.querySelector('meta[name="description"]');
+    if (!tag) {
+      tag = document.createElement('meta');
+      tag.name = 'description';
+      document.head.appendChild(tag);
+    }
+    tag.content = description;
+  }, [title, description]);
+}
+
+const SITE_URL = (typeof window !== 'undefined' && window.location.origin.startsWith('http'))
+  ? window.location.origin
+  : 'https://lagomdezign.com';
+
+// Injects a JSON-LD script tag into <head>. `id` keeps it deduplicated per route.
+function injectJsonLd(id, data) {
+  let el = document.getElementById(id);
+  if (!el) {
+    el = document.createElement('script');
+    el.id = id;
+    el.type = 'application/ld+json';
+    document.head.appendChild(el);
+  }
+  el.textContent = JSON.stringify(data);
+}
+
+function removeJsonLd(id) {
+  document.getElementById(id)?.remove();
+}
+
+// LocalBusiness schema — injected once at app level so crawlers always see it.
+function useLocalBusinessSchema() {
+  useEffect(() => {
+    injectJsonLd('ld-local-business', {
+      '@context': 'https://schema.org',
+      '@type': 'Store',
+      name: APP_NAME,
+      description: 'Hand-poured resin souvenirs and personalised keepsakes, made to order.',
+      url: SITE_URL,
+      email: CONTACT.email,
+      telephone: '+91-90000-00000',
+      priceRange: '₹₹',
+      image: `${SITE_URL}/favicon.ico`,
+      address: { '@type': 'PostalAddress', addressCountry: 'IN' },
+      sameAs: [CONTACT.instagram],
+      openingHoursSpecification: {
+        '@type': 'OpeningHoursSpecification',
+        dayOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+        opens: '10:00',
+        closes: '19:00',
+      },
+    });
+    return () => removeJsonLd('ld-local-business');
+  }, []);
+}
+
+// ─── BREADCRUMBS ──────────────────────────────────────────────────────────────
+
+function Breadcrumbs({ items }) {
+  // items: [{ label, href? }] — last item is the current page (no link).
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: items.map((it, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: it.label,
+      ...(it.href ? { item: `${SITE_URL}/${it.href.replace(/^#/, '')}` } : {}),
+    })),
+  };
+  useEffect(() => {
+    injectJsonLd('ld-breadcrumbs', jsonLd);
+    return () => removeJsonLd('ld-breadcrumbs');
+  }); // re-inject whenever the trail changes
+
+  return (
+    <nav className="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        {items.map((it, i) => (
+          <li key={`${it.label}-${i}`}>
+            {it.href && i < items.length - 1 ? (
+              <a href={it.href}>{it.label}</a>
+            ) : (
+              <span aria-current="page">{it.label}</span>
+            )}
+            {i < items.length - 1 && <span className="crumb-sep" aria-hidden="true">/</span>}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+// ─── FAQ (products · shipping · returns) ──────────────────────────────────────
+
+const FAQS = [
+  {
+    q: 'Are your products handmade?',
+    a: 'Yes — every piece is hand-poured resin, made to order in small batches. Because of this, tiny variations in colour swirls and bubbles are natural and make each keepsake one of a kind.',
+  },
+  {
+    q: 'Can I personalise a product with a name or message?',
+    a: 'Many pieces can be customised. If a product is personalisable you\'ll see a "Your message" field on its page — just type the exact spelling you want and double-check before ordering, as personalised items can\'t be returned.',
+  },
+  {
+    q: 'How long does shipping take?',
+    a: 'Every order is made to order and ships within 5–7 days. Delivery usually takes another 2–5 days depending on your pincode in India. You\'ll receive tracking details once your parcel is dispatched.',
+  },
+  {
+    q: 'What is your return policy?',
+    a: 'We accept returns within 7 days of delivery for damaged or defective items — just send us a photo on WhatsApp or email and we\'ll arrange a replacement or full refund. Personalised items can only be returned if they arrive damaged.',
+  },
+  {
+    q: 'How should I care for my resin keepsake?',
+    a: 'Wipe clean with a soft dry cloth. Avoid direct sunlight for long periods, soaking in water, and harsh chemicals — treated well, your piece will stay glossy for years.',
+  },
+];
+
+function FAQ() {
+  const [open, setOpen] = useState(-1);
+  useEffect(() => {
+    injectJsonLd('ld-faq', {
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: FAQS.map((f) => ({
+        '@type': 'Question',
+        name: f.q,
+        acceptedAnswer: { '@type': 'Answer', text: f.a },
+      })),
+    });
+    return () => removeJsonLd('ld-faq');
+  }, []);
+
+  return (
+    <div className="page faq-section">
+      <h2 style={{ textAlign: 'center' }}>Frequently Asked Questions</h2>
+      <div className="faq-list">
+        {FAQS.map((f, i) => (
+          <div key={i} className={open === i ? 'faq-item open' : 'faq-item'}>
+            <button type="button" className="faq-q" onClick={() => setOpen(open === i ? -1 : i)} aria-expanded={open === i}>
+              {f.q}
+              <span aria-hidden="true">{open === i ? '−' : '+'}</span>
+            </button>
+            {open === i && <p className="faq-a">{f.a}</p>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── STICKY MOBILE CTA ────────────────────────────────────────────────────────
+
+function StickyMobileCTA({ cartCount }) {
+  return (
+    <div className="sticky-mobile-cta" role="navigation" aria-label="Quick actions">
+      <a href="#/shop" className="smc-btn">🛍 Shop</a>
+      <a href={CONTACT.whatsapp} target="_blank" rel="noreferrer" className="smc-btn">💬 Chat</a>
+      <a href="#/cart" className="smc-btn smc-primary">
+        Cart{cartCount > 0 && <span className="cart-count">{cartCount}</span>}
+      </a>
+    </div>
+  );
+}
 
 // ─── PAGINATION ───────────────────────────────────────────────────────────────
 
@@ -356,7 +528,7 @@ function Carousel({ products = [] }) {
               <span className="slide-caption">{slide.name}</span>
             </a>
           ) : (
-            <img key={src} src={src} alt="" className={i === index ? 'slide active' : 'slide'} />
+            <img key={src} src={src} alt="Hand-poured resin keepsake from the signature collection" className={i === index ? 'slide active' : 'slide'} />
           );
         })}
         {count > 1 && (
@@ -607,8 +779,13 @@ function Landing({ products, loading }) {
   useEffect(() => {
     fetchFeaturedReviews().then(setQuotes).catch(() => {});
   }, []);
+  useMeta(
+    `${APP_NAME} — Souvenirs that flow with your memories`,
+    `${APP_NAME} crafts hand-poured resin souvenirs and personalised keepsakes — made to order and delivered across India.`
+  );
   return (
     <>
+      <Breadcrumbs items={[{ label: 'Home' }]} />
       <section className="hero">
         <Bubbles />
         <h1>{APP_NAME}</h1>
@@ -775,6 +952,11 @@ function ProductDetails({ id, products, onAdd, session }) {
   const selectedDimension = dimensions[dimIdx] || null;
   const displayPrice = selectedDimension ? selectedDimension.price_paise : product.price_paise;
 
+  useMeta(
+    `${product.name} — ${APP_NAME}`,
+    `${product.name} — hand-poured resin keepsake from ${APP_NAME}. ${product.description || 'Personalised, made to order and shipped across India.'} From ${rupees(product.price_paise)}.`
+  );
+
   function add() {
     onAdd(product, message, selectedDimension);
     setMessage('');
@@ -783,8 +965,10 @@ function ProductDetails({ id, products, onAdd, session }) {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 1140 }}>
-      <a href="#/shop" className="link-btn">← Back to shop</a>
+    <>
+      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: product.name }]} />
+      <div className="page" style={{ maxWidth: 1140 }}>
+        <a href="#/shop" className="link-btn">← Back to shop</a>
       <div className="product-details">
         <div className="pd-gallery">
           {images.length > 0 ? (
@@ -877,7 +1061,8 @@ function ProductDetails({ id, products, onAdd, session }) {
       <div className="card">
         <ProductReviews productId={product.id} session={session} />
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -901,8 +1086,15 @@ function Shop({ products, loading, onAdd }) {
 
   const { page: safePage, setPage, pageCount, slice: pageSlice } = usePager(filtered, SHOP_PAGE_SIZE);
 
+  useMeta(
+    `Shop the Collection — ${APP_NAME}`,
+    `Browse hand-poured resin souvenirs and personalised keepsakes from ${APP_NAME}. Made to order, shipped across India.`
+  );
+
   return (
-    <div className="page">
+    <>
+      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop' }]} />
+      <div className="page">
       <h1>The Collection</h1>
       {loading ? (
         <Spinner />
@@ -952,7 +1144,8 @@ function Shop({ products, loading, onAdd }) {
           <Pager page={safePage} pageCount={pageCount} setPage={setPage} label={`${filtered.length} products`} />
         </>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -2092,7 +2285,7 @@ function AdminProducts() {
                 </td>
                 <td>
                   {p.thumb_url
-                    ? <img src={p.thumb_url} alt="" style={{ width: 56, height: 42, objectFit: 'cover', borderRadius: 6 }} />
+                    ? <img src={p.thumb_url} alt={p.name} style={{ width: 56, height: 42, objectFit: 'cover', borderRadius: 6 }} />
                     : '—'}
                 </td>
                 <td>{p.name}</td>
@@ -2973,6 +3166,8 @@ export default function App() {
   const [productsLoaded, setProductsLoaded] = useState(false);
   const [toast, setToast] = useState('');
 
+  useLocalBusinessSchema();
+
   useEffect(() => {
     document.title = `${APP_NAME} — Souvenirs that flow with your memories`;
   }, []);
@@ -3093,7 +3288,9 @@ export default function App() {
         )}
       </nav>
       {content}
+      {!route.startsWith('/admin') && <FAQ />}
       <Toast message={toast} />
+      {!session?.admin && <StickyMobileCTA cartCount={cartCount} />}
       <Footer />
     </>
   );
