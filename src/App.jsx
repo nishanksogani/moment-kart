@@ -172,7 +172,17 @@ function Breadcrumbs({ items }) {
       <ol>
         {items.map((it, i) => (
           <li key={`${it.label}-${i}`}>
-            {it.href && i < items.length - 1 ? (
+            {i === 0 && it.href ? (
+              // Home link with icon
+              <a href={it.href} className="crumb-home" aria-label="Home">
+                <span className="crumb-home-icon" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                    <polyline points="9 22 9 12 15 12 15 22" />
+                  </svg>
+                </span>
+              </a>
+            ) : it.href && i < items.length - 1 ? (
               <a href={it.href}>{it.label}</a>
             ) : (
               <span aria-current="page">{it.label}</span>
@@ -785,7 +795,6 @@ function Landing({ products, loading }) {
   );
   return (
     <>
-      <Breadcrumbs items={[{ label: 'Home' }]} />
       <section className="hero">
         <Bubbles />
         <h1>{APP_NAME}</h1>
@@ -1161,21 +1170,17 @@ function Cart({ cart, setCart, session }) {
     setCart(next);
   }
 
-  if (cart.length === 0) {
-    return (
+  return (
+    <>
+      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: 'Cart' }]} />
       <div className="page">
         <h1>Your Cart</h1>
-        <p className="empty">
-          Your cart is empty. <a href="#/shop" style={{ color: 'var(--ocean)', fontWeight: 600 }}>Browse the collection →</a>
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="page">
-      <h1>Your Cart</h1>
-      <div className="card">
+        {cart.length === 0 ? (
+          <p className="empty">
+            Your cart is empty. <a href="#/shop" style={{ color: 'var(--ocean)', fontWeight: 600 }}>Browse the collection →</a>
+          </p>
+        ) : (
+          <div className="card">
         {cart.map((item, idx) => (
           <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderBottom: '1px solid var(--foam)', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 180 }}>
@@ -1305,9 +1310,11 @@ function Checkout({ cart, setCart }) {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 640 }}>
-      <h1>Checkout</h1>
-      <form onSubmit={placeOrder}>
+    <>
+      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: 'Cart', href: '#/cart' }, { label: 'Checkout' }]} />
+      <div className="page" style={{ maxWidth: 640 }}>
+        <h1>Checkout</h1>
+        <form onSubmit={placeOrder}>
         <div className="card" style={{ marginBottom: 20 }}>
           <h2 style={{ marginTop: 0 }}>Order summary</h2>
           {cart.map((item, idx) => (
@@ -1433,8 +1440,10 @@ function MyOrders() {
   if (!orders) return <div className="page"><Spinner /></div>;
 
   return (
-    <div className="page" style={{ maxWidth: 720 }}>
-      <h1>My Orders</h1>
+    <>
+      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: 'My Orders' }]} />
+      <div className="page" style={{ maxWidth: 720 }}>
+        <h1>My Orders</h1>
       {orders.length === 0 ? (
         <p className="empty">No orders yet.</p>
       ) : (
@@ -1640,9 +1649,11 @@ function Profile({ session }) {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 560 }}>
-      <h1>My Profile</h1>
-      {!loaded ? (
+    <>
+      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: 'My Profile' }]} />
+      <div className="page" style={{ maxWidth: 560 }}>
+        <h1>My Profile</h1>
+        {!loaded ? (
         <Spinner />
       ) : (
         <>
