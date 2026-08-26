@@ -1181,34 +1181,32 @@ function Cart({ cart, setCart, session }) {
           </p>
         ) : (
           <div className="card">
-            {cart.map((item, idx) => (
-              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderBottom: '1px solid var(--foam)', flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 180 }}>
-                  <strong>{item.name}</strong>
-                  {item.dimension && (
-                    <div style={{ fontSize: 13, color: 'var(--slate)' }}>Size: {item.dimension}</div>
-                  )}
-                  {item.message && (
-                    <div style={{ fontSize: 13, color: 'var(--slate)' }}>💬 “{item.message}”</div>
-                  )}
-                </div>
-                <div className="qty-controls">
-                  <button onClick={() => setQty(idx, item.qty - 1)}>−</button>
-                  <span>{item.qty}</span>
-                  <button onClick={() => setQty(idx, item.qty + 1)}>+</button>
-                </div>
-                <strong style={{ minWidth: 90, textAlign: 'right' }}>{rupees(item.price_paise * item.qty)}</strong>
-              </div>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16, fontSize: 18 }}>
-              <strong>Total</strong>
-              <strong style={{ color: 'var(--ocean)' }}>{rupees(total)}</strong>
+        {cart.map((item, idx) => (
+          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderBottom: '1px solid var(--foam)', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <strong>{item.name}</strong>
+              {item.dimension && (
+                <div style={{ fontSize: 13, color: 'var(--slate)' }}>Size: {item.dimension}</div>
+              )}
+              {item.message && (
+                <div style={{ fontSize: 13, color: 'var(--slate)' }}>💬 “{item.message}”</div>
+              )}
             </div>
-            <button className="btn" style={{ width: '100%', marginTop: 18 }} onClick={() => go(session ? '/checkout' : '/auth')}>
-              {session ? 'Proceed to checkout →' : 'Login to checkout →'}
-            </button>
+            <div className="qty-controls">
+              <button onClick={() => setQty(idx, item.qty - 1)}>−</button>
+              <span>{item.qty}</span>
+              <button onClick={() => setQty(idx, item.qty + 1)}>+</button>
+            </div>
+            <strong style={{ minWidth: 90, textAlign: 'right' }}>{rupees(item.price_paise * item.qty)}</strong>
           </div>
-        )}
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16, fontSize: 18 }}>
+          <strong>Total</strong>
+          <strong style={{ color: 'var(--ocean)' }}>{rupees(total)}</strong>
+        </div>
+        <button className="btn" style={{ width: '100%', marginTop: 18 }} onClick={() => go(session ? '/checkout' : '/auth')}>
+          {session ? 'Proceed to checkout →' : 'Login to checkout →'}
+        </button>
       </div>
     </div>
   );
