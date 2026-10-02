@@ -801,13 +801,38 @@ th {
 }
 
 /* --- Breadcrumbs ----------------------------------------------------------- */
-.breadcrumbs { padding: 12px 20px 0; font-size: 13px; }
-.breadcrumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.breadcrumbs li { display: flex; align-items: center; gap: 6px; }
-.breadcrumbs a { color: var(--slate); text-decoration: none; }
-.breadcrumbs a:hover { color: var(--primary); text-decoration: underline; }
-.crumb-sep { color: var(--muted); }
-.breadcrumbs [aria-current='page'] { color: var(--deep); font-weight: 600; }
+.breadcrumbs {
+  max-width: 1080px; margin: 0 auto; padding: 24px 24px 0;
+  font-size: 13px; line-height: 1.5;
+}
+.breadcrumbs-wide { max-width: 1140px; }
+.breadcrumbs ol {
+  list-style: none; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px 8px; padding-bottom: 16px; border-bottom: 1px solid var(--line);
+}
+.breadcrumbs li { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.breadcrumbs a {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 36px;
+  color: var(--deep); border-radius: 8px; text-decoration: none;
+  transition: color 0.2s, background 0.2s;
+}
+.breadcrumbs a:hover { color: var(--primary); background: var(--tint-1); }
+.breadcrumbs a:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.crumb-home { width: 16px; height: 16px; flex-shrink: 0; color: var(--primary); }
+.crumb-sep { width: 16px; height: 16px; flex-shrink: 0; color: var(--slate); }
+.breadcrumbs [aria-current='page'] {
+  min-width: 0; padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px;
+  background: linear-gradient(135deg, var(--tint-1), var(--tint-2), var(--tint-3));
+  color: var(--deep); font-weight: 600; overflow-wrap: anywhere;
+}
+.breadcrumbs + .page { padding-top: 28px; }
+@media (max-width: 720px) {
+  .breadcrumbs { padding: 18px 16px 0; font-size: 12px; }
+  .breadcrumbs ol { gap: 4px 6px; padding-bottom: 12px; }
+  .breadcrumbs li { gap: 6px; }
+  .breadcrumbs [aria-current='page'] { padding: 7px 12px; }
+  .breadcrumbs + .page { padding-top: 24px; }
+}
 
 /* --- FAQ ------------------------------------------------------------------- */
 .faq-section { max-width: 720px; margin: 0 auto; padding-top: 40px; }

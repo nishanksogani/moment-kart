@@ -150,7 +150,7 @@ function useLocalBusinessSchema() {
 
 // ─── BREADCRUMBS ──────────────────────────────────────────────────────────────
 
-function Breadcrumbs({ items }) {
+function Breadcrumbs({ items, wide = false }) {
   // items: [{ label, href? }] — last item is the current page (no link).
   const jsonLd = {
     '@context': 'https://schema.org',
@@ -159,7 +159,7 @@ function Breadcrumbs({ items }) {
       '@type': 'ListItem',
       position: i + 1,
       name: it.label,
-      ...(it.href ? { item: `${SITE_URL}/${it.href.replace(/^#/, '')}` } : {}),
+      ...(it.href ? { item: `${SITE_URL}/${it.href}` } : {}),
     })),
   };
   useEffect(() => {
@@ -168,16 +168,19 @@ function Breadcrumbs({ items }) {
   }); // re-inject whenever the trail changes
 
   return (
-    <nav className="breadcrumbs" aria-label="Breadcrumb">
+    <nav className={wide ? 'breadcrumbs breadcrumbs-wide' : 'breadcrumbs'} aria-label="Breadcrumb">
       <ol>
         {items.map((it, i) => (
           <li key={`${it.label}-${i}`}>
             {it.href && i < items.length - 1 ? (
-              <a href={it.href}>{it.label}</a>
+              <a href={it.href}>
+                {i === 0 && <svg className="crumb-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7" /><path d="M5 9v11h5v-6h4v6h5V9" /></svg>}
+                {it.label}
+              </a>
             ) : (
               <span aria-current="page">{it.label}</span>
             )}
-            {i < items.length - 1 && <span className="crumb-sep" aria-hidden="true">/</span>}
+            {i < items.length - 1 && <svg className="crumb-sep" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>}
           </li>
         ))}
       </ol>
@@ -785,7 +788,6 @@ function Landing({ products, loading }) {
   );
   return (
     <>
-      <Breadcrumbs items={[{ label: 'Home' }]} />
       <section className="hero">
         <Bubbles />
         <h1>{APP_NAME}</h1>
@@ -918,7 +920,7 @@ function ProductCard({ product, onAdd }) {
 
 // ─── PRODUCT DETAILS ────────────────────────────────────────────────────────
 
-function ProductDetails({ id, products, onAdd, session }) {
+function ProductDetails({ id, products, loading, onAdd, session }) {
   const product = products.find((p) => p.id === id);
   const [active, setActive] = useState(0);
   const [message, setMessage] = useState('');
@@ -935,10 +937,16 @@ function ProductDetails({ id, products, onAdd, session }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [lightboxOpen]);
 
+  // Keep hook order stable while the catalog loads on a direct product visit.
+  useMeta(
+    product ? `${product.name} — ${APP_NAME}` : `Product — ${APP_NAME}`,
+    product ? `${product.name} — hand-poured resin keepsake from ${APP_NAME}. ${product.description || 'Personalised, made to order and shipped across India.'} From ${rupees(product.price_paise)}.` : 'Explore hand-poured resin keepsakes and personalised gifts.'
+  );
+
   if (!product) {
     return (
       <div className="page">
-        {products.length === 0 ? (
+        {loading ? (
           <Spinner />
         ) : (
           <p className="empty">That product isn't available anymore. <a href="#/shop" style={{ color: 'var(--ocean)', fontWeight: 700 }}>Browse the collection →</a></p>
@@ -952,11 +960,6 @@ function ProductDetails({ id, products, onAdd, session }) {
   const selectedDimension = dimensions[dimIdx] || null;
   const displayPrice = selectedDimension ? selectedDimension.price_paise : product.price_paise;
 
-  useMeta(
-    `${product.name} — ${APP_NAME}`,
-    `${product.name} — hand-poured resin keepsake from ${APP_NAME}. ${product.description || 'Personalised, made to order and shipped across India.'} From ${rupees(product.price_paise)}.`
-  );
-
   function add() {
     onAdd(product, message, selectedDimension);
     setMessage('');
@@ -966,7 +969,7 @@ function ProductDetails({ id, products, onAdd, session }) {
 
   return (
     <>
-      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: product.name }]} />
+      <Breadcrumbs wide items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: product.name }]} />
       <div className="page" style={{ maxWidth: 1140 }}>
         <a href="#/shop" className="link-btn">← Back to shop</a>
       <div className="product-details">
@@ -3228,6 +3231,7 @@ export default function App() {
       <ProductDetails
         id={route.slice('/product/'.length)}
         products={products}
+        loading={!productsLoaded}
         onAdd={session?.admin ? undefined : addToCart}
         session={session}
       />
