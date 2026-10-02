@@ -1,3 +1,4 @@
+import { authLimitConfig } from '../shared/auth-limits.js';
 // Data layer. In production every call hits the Vercel serverless APIs (Postgres).
 // In local dev (`npm run dev`) everything is served from localStorage — no backend,
 // no database needed to iterate on the UI.
@@ -5,6 +6,17 @@
 export const IS_DEV = !import.meta.env.PROD;
 
 export const AUTH_KEY = 'moment-kart-auth';
+
+async function readResponse(res) {
+  let data;
+  try { data = await res.json(); } catch { throw new Error('The server returned an unreadable response. Please try again.'); }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}). Please try again.`);
+  return data;
+}
+
+export function reportApiError(error) {
+  window.dispatchEvent(new CustomEvent('api-error', { detail: error instanceof TypeError ? 'Connection error. Please check your internet connection and try again.' : error?.message || 'Connection error — please try again.' }));
+}
 
 function authFetch(url, opts = {}) {
   const token = localStorage.getItem(AUTH_KEY) || '';
@@ -18,8 +30,7 @@ function authFetch(url, opts = {}) {
   }).then((r) => {
     if (r.status === 401) {
       localStorage.removeItem(AUTH_KEY);
-      window.location.hash = '#/auth';
-      window.location.reload();
+      window.location.assign(`/auth?returnTo=${encodeURIComponent(window.location.pathname)}`);
     }
     return r;
   });
@@ -28,7 +39,8 @@ function authFetch(url, opts = {}) {
 async function toResult(resPromise) {
   try {
     const res = await resPromise;
-    const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({ error: 'The server returned an unreadable response. Please try again.' }));
+    if (data.error && res.ok) return { ok: false, data };
     return { ok: res.ok, data };
   } catch {
     return { ok: false, data: { error: 'Connection error — please try again' } };
@@ -106,9 +118,9 @@ function devSendEmail(payload) {
 }
 
 // Verification codes are never shown in the UI — check the dev server terminal.
-function issueDevCode(codes, email) {
+function issueDevCode(codes, email, purpose = 'verify') {
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  codes[email] = code;
+  codes[email] = { code, purpose, expiresAt: Date.now() + 10 * 60_000 };
   write(CODES_KEY, codes);
   devSendEmail({ kind: 'verification', to: email, code });
   return code;
@@ -123,6 +135,13 @@ export async function authAction(body) {
   const codes = read(CODES_KEY, {});
   const email = String(body.email || '').trim().toLowerCase();
   const user = users.find((u) => u.email === email);
+  const bucket = body.action === 'login' ? 'login' : ['verify', 'reset'].includes(body.action) ? 'otp-check' : 'otp-send';
+  const config = authLimitConfig({ AUTH_MAX_ATTEMPTS: __AUTH_MAX_ATTEMPTS__, AUTH_WINDOW_MINUTES: __AUTH_WINDOW_MINUTES__ });
+  const key = `mk-dev-attempts-${bucket}-${email}`;
+  const attempt = read(key, { count: 0, startedAt: Date.now() });
+  if (Date.now() - attempt.startedAt >= config.windowMs) { attempt.count = 0; attempt.startedAt = Date.now(); }
+  if (attempt.count >= config.attempts) return { ok: false, data: { error: 'Too many attempts. Please try again after the configured authentication window.' } };
+  attempt.count++; write(key, attempt);
 
   if (body.action === 'signup') {
     if (user?.verified) return { ok: false, data: { error: 'Account already exists — please login' } };
@@ -138,7 +157,7 @@ export async function authAction(body) {
     return { ok: true, data: {} };
   }
   if (body.action === 'verify') {
-    if (!user || codes[email] !== String(body.code)) return { ok: false, data: { error: 'Invalid verification code' } };
+    if (!user || (codes[email]?.code !== String(body.code) || codes[email]?.expiresAt <= Date.now() || codes[email]?.purpose !== 'verify')) return { ok: false, data: { error: 'Invalid verification code' } };
     user.verified = true;
     user.last_login = new Date().toISOString();
     write(USERS_KEY, users);
@@ -148,12 +167,12 @@ export async function authAction(body) {
   }
   if (body.action === 'forgot') {
     if (!user) return { ok: true, data: { message: 'If an account exists, a reset code has been sent' } };
-    issueDevCode(codes, email);
+    issueDevCode(codes, email, 'reset');
     return { ok: true, data: { message: 'If an account exists, a reset code has been sent' } };
   }
   if (body.action === 'reset') {
     if (String(body.password || '').length < 6) return { ok: false, data: { error: 'Password must be at least 6 characters' } };
-    if (!user || codes[email] !== String(body.code)) return { ok: false, data: { error: 'Invalid reset code' } };
+    if (!user || (codes[email]?.code !== String(body.code) || codes[email]?.expiresAt <= Date.now() || codes[email]?.purpose !== 'reset')) return { ok: false, data: { error: 'Invalid reset code' } };
     user.password = body.password;
     user.verified = true;
     user.last_login = new Date().toISOString();
@@ -182,8 +201,37 @@ export async function authAction(body) {
 // ─── Products ─────────────────────────────────────────────────────────────────
 
 export async function fetchProducts() {
-  if (!IS_DEV) return fetch('/api/products').then((r) => r.json());
+  if (!IS_DEV) {
+    const data = await fetch('/api/products').then(readResponse);
+    if (!Array.isArray(data)) throw new Error('The catalog could not be loaded. Please try again.');
+    return data;
+  }
   return read(PRODUCTS_KEY, []);
+}
+
+export async function fetchProduct(id) {
+  if (!IS_DEV) return fetch(`/api/products?id=${encodeURIComponent(id)}`).then(readResponse);
+  const product = read(PRODUCTS_KEY, []).find(p => String(p.id) === String(id));
+  if (!product) throw new Error('Product not found');
+  return product;
+}
+
+export async function fetchAdminProducts() {
+  if (!IS_DEV) return authFetch('/api/products?scope=admin').then(readResponse);
+  return read(PRODUCTS_KEY, []);
+}
+
+export async function quoteCart(items) {
+  if (!IS_DEV) return toResult(authFetch('/api/orders', { method: 'POST', body: JSON.stringify({ action: 'quote', items }) }));
+  try {
+    const { priceCart } = await import('../shared/pricing.js');
+    const priced = priceCart(items, read(PRODUCTS_KEY, []));
+    const upiId = typeof __UPI_ID__ !== 'undefined' ? __UPI_ID__ : '';
+    if (!upiId) throw new Error('Payments are temporarily unavailable. Please contact the shop.');
+    const quote = { ...priced, uid: devCurrentUser()?.uid, upi_id: upiId, expires_at: Date.now() + 30 * 60_000, quote_token: crypto.randomUUID() };
+    write(`mk-dev-quote-${quote.quote_token}`, quote);
+    return { ok: true, data: quote };
+  } catch (error) { return { ok: false, data: { error: error.message } }; }
 }
 
 export async function saveProduct(product, editingId) {
@@ -230,7 +278,7 @@ export async function reorderProducts(ids) {
 export async function fetchProfile() {
   if (!IS_DEV) {
     const res = await authFetch('/api/profile');
-    return res.ok ? res.json() : null;
+    return readResponse(res);
   }
   const me = devCurrentUser();
   const user = read(USERS_KEY, []).find((u) => u.email === me?.email);
@@ -277,36 +325,20 @@ export async function changePassword(current_password, new_password) {
 
 // ─── Orders ───────────────────────────────────────────────────────────────────
 
-export async function placeOrder({ items, address, upi_ref, transaction_date }) {
-  if (!IS_DEV) return toResult(authFetch('/api/orders', { method: 'POST', body: JSON.stringify({ items, address, upi_ref, transaction_date }) }));
+export async function placeOrder({ items, address, upi_ref, transaction_date, quote_token }) {
+  if (!IS_DEV) return toResult(authFetch('/api/orders', { method: 'POST', body: JSON.stringify({ address, upi_ref, transaction_date, quote_token }) }));
 
   const me = devCurrentUser();
-  const products = read(PRODUCTS_KEY, []);
-  let total = 0;
-  const verifiedItems = [];
-  for (const item of items) {
-    const product = products.find((p) => p.id === item.productId);
-    if (!product) return { ok: false, data: { error: 'Product no longer available' } };
-    if (!product.in_stock) return { ok: false, data: { error: `"${product.name}" is out of stock` } };
-
-    let price_paise = product.price_paise;
-    let dimension = null;
-    const dims = Array.isArray(product.dimensions) ? product.dimensions : [];
-    if (dims.length > 0) {
-      dimension = dims.find((d) => d.label === item.dimension);
-      if (!dimension) return { ok: false, data: { error: `Choose a size for "${product.name}"` } };
-      price_paise = dimension.price_paise;
-    }
-
-    const qty = Math.max(1, Math.min(20, parseInt(item.qty, 10) || 1));
-    total += price_paise * qty;
-    verifiedItems.push({ productId: product.id, name: product.name, price_paise, dimension: dimension?.label || null, qty, message: product.customizable ? String(item.message || '').slice(0, 200) : '' });
-  }
+  const quote = read(`mk-dev-quote-${quote_token}`, null);
+  if (!quote || quote.uid !== me?.uid || quote.expires_at <= Date.now()) return { ok: false, data: { error: 'Payment quote expired. Refresh prices before paying.' } };
+  const total = quote.total_paise;
+  const verifiedItems = quote.items;
   const orders = read(ORDERS_KEY, []);
+  if (orders.some(order => order.quote_token === quote_token && order.user_email === me?.email)) return { ok: true, data: {} };
   const orderNo = Math.max(1000, ...orders.map((o) => Number(o.order_no) || 0)) + 1;
   orders.unshift({
     id: nextId(orders), order_no: orderNo, user_email: me?.email, user_name: me?.name,
-    items: verifiedItems, address, total_paise: total,
+    quote_token, items: verifiedItems, address, total_paise: total,
     upi_ref, status: 'pending', created_at: new Date().toISOString(),
     paid_at: transaction_date || todayStr(),
   });
@@ -326,7 +358,7 @@ export async function placeOrder({ items, address, upi_ref, transaction_date }) 
 export async function fetchMyOrders() {
   if (!IS_DEV) {
     const res = await authFetch('/api/orders');
-    return res.ok ? res.json() : [];
+    return readResponse(res);
   }
   const me = devCurrentUser();
   return read(ORDERS_KEY, []).filter((o) => o.user_email === me?.email);
@@ -336,7 +368,7 @@ export async function fetchAdminOrders(filter) {
   if (!IS_DEV) {
     const q = filter === 'all' ? '' : `&status=${filter}`;
     const res = await authFetch(`/api/orders?scope=admin${q}`);
-    return res.ok ? res.json() : [];
+    return readResponse(res);
   }
   const orders = read(ORDERS_KEY, []);
   return filter === 'all' ? orders : orders.filter((o) => o.status === filter);
@@ -419,7 +451,7 @@ export async function impersonateUser(email) {
 export async function fetchAdminUsers() {
   if (!IS_DEV) {
     const res = await authFetch('/api/users');
-    return res.ok ? res.json() : [];
+    return readResponse(res);
   }
   const orders = read(ORDERS_KEY, []);
   const activity = (email) => {
@@ -449,7 +481,7 @@ export async function sendMarketingEmail({ userEmails, productIds, subject, mess
 export async function fetchReviews(productId) {
   if (!IS_DEV) {
     const res = await fetch(`/api/reviews?productId=${productId}`);
-    return res.ok ? res.json() : [];
+    return readResponse(res);
   }
   return read(REVIEWS_KEY, []).filter((r) => r.product_id === productId && r.status === 'approved');
 }
@@ -457,7 +489,7 @@ export async function fetchReviews(productId) {
 export async function fetchFeaturedReviews() {
   if (!IS_DEV) {
     const res = await fetch('/api/reviews?scope=featured');
-    return res.ok ? res.json() : [];
+    return readResponse(res);
   }
   const products = read(PRODUCTS_KEY, []);
   return read(REVIEWS_KEY, [])
@@ -485,7 +517,7 @@ export async function fetchAdminReviews(filter) {
   if (!IS_DEV) {
     const q = filter === 'all' ? '' : `&status=${filter}`;
     const res = await authFetch(`/api/reviews?scope=admin${q}`);
-    return res.ok ? res.json() : [];
+    return readResponse(res);
   }
   const products = read(PRODUCTS_KEY, []);
   const reviews = read(REVIEWS_KEY, []).map((r) => {

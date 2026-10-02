@@ -1,5 +1,6 @@
 import { db, ensureSchema } from './_db.js';
 import { requireAuth, hashPassword, checkPassword } from './_auth.js';
+import { logError } from './_log.js';
 
 // The users.address JSONB column holds an array of addresses.
 // Legacy rows may hold a single address object — normalize to an array on read.
@@ -10,6 +11,11 @@ function toAddressList(value) {
 }
 
 export default async function handler(req, res) {
+  try { return await profileHandler(req, res); }
+  catch (error) { logError('profile_handler_error', error); return res.status(500).json({ error: 'Could not load or save your profile. Please try again.' }); }
+}
+
+async function profileHandler(req, res) {
   const user = requireAuth(req, res);
   if (!user) return;
   const sql = db();

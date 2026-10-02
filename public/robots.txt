@@ -1,6 +1,11 @@
 User-agent: *
 Allow: /
 Disallow: /api/
-Disallow: /#/admin
+Allow: /api/products
+Disallow: /admin/
+Disallow: /auth
+Disallow: /checkout
+Disallow: /orders
+Disallow: /profile
 
-Sitemap: https://moment-kart.vercel.app/api/sitemap
+Sitemap: https://lagom-dezign.vercel.app/sitemap.xml

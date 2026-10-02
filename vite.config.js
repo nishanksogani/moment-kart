@@ -73,12 +73,23 @@ export default defineConfig(({ command, mode }) => {
     if (env[key]) process.env[key] = env[key];
   }
   return {
-    plugins: [react(), devEmailApi()],
+    plugins: [react(), devEmailApi(), {
+      name: 'site-robots',
+      generateBundle() {
+        const site = (env.SITE_URL || 'https://lagom-dezign.vercel.app').replace(/\/$/, '');
+        this.emitFile({ type: 'asset', fileName: 'robots.txt', source: `User-agent: *\nAllow: /\nDisallow: /api/\nAllow: /api/products\nDisallow: /admin/\nDisallow: /auth\nDisallow: /checkout\nDisallow: /orders\nDisallow: /profile\nSitemap: ${site}/sitemap.xml\n` });
+      },
+    }],
     define: {
       // Shop display name — set APP_NAME in .env.local / Vercel to rebrand.
       __APP_NAME__: JSON.stringify(env.APP_NAME || ''),
       // UPI id is public by nature (customers pay to it) — embedded in all builds.
       __UPI_ID__: JSON.stringify(env.ADMIN_UPI_ID || ''),
+      __SUPPORT_EMAIL__: JSON.stringify(env.SUPPORT_EMAIL || ''),
+      __SUPPORT_WHATSAPP__: JSON.stringify(env.SUPPORT_WHATSAPP || ''),
+      __SITE_URL__: JSON.stringify(env.SITE_URL || ''),
+      __AUTH_MAX_ATTEMPTS__: JSON.stringify(Number(env.AUTH_MAX_ATTEMPTS) > 0 ? Number(env.AUTH_MAX_ATTEMPTS) : 3),
+      __AUTH_WINDOW_MINUTES__: JSON.stringify(Number(env.AUTH_WINDOW_MINUTES) > 0 ? Number(env.AUTH_WINDOW_MINUTES) : 10),
       // Admin credentials are injected in `npm run dev` ONLY —
       // they must never end up in a production bundle.
       __DEV_ADMIN_EMAIL__: JSON.stringify(isDev ? env.ADMIN_EMAIL || '' : ''),

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import QRCode from 'qrcode';
+import { currentRoute, go, interceptLink } from './routing.js';
+import PolicyPage, { POLICY_PAGES } from './Policies.jsx';
 import {
-  AUTH_KEY, authAction, fetchProducts, saveProduct, deleteProduct, reorderProducts,
+  AUTH_KEY, authAction, fetchProducts, fetchProduct, fetchAdminProducts, quoteCart, reportApiError, saveProduct, deleteProduct, reorderProducts,
   fetchProfile, saveProfile, changePassword, placeOrder as apiPlaceOrder,
   fetchMyOrders, fetchAdminOrders, setOrderStatus as apiSetOrderStatus, resubmitPayment,
   deleteOrders, TERMINAL_ORDER_STATUSES,
@@ -12,10 +14,10 @@ import {
 // ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
 
 const CART_KEY = 'moment-kart-cart';
-const UPI_ID = (typeof __UPI_ID__ !== 'undefined' && __UPI_ID__) || 'momentkart@upi';
+const UPI_ID = (typeof __UPI_ID__ !== 'undefined' && __UPI_ID__) || '';
 
-const buildUpiLink = (totalPaise) =>
-  `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=${encodeURIComponent(APP_NAME)}&am=${(totalPaise / 100).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`${APP_NAME} order`)}`;
+const buildUpiLink = (totalPaise, payee = UPI_ID) =>
+  `upi://pay?pa=${encodeURIComponent(payee)}&pn=${encodeURIComponent(APP_NAME)}&am=${(totalPaise / 100).toFixed(2)}&cu=INR&tn=${encodeURIComponent(`${APP_NAME} order`)}`;
 // Shop display name, configurable via APP_NAME in .env.local (dev) / Vercel env vars (prod).
 const APP_NAME = (typeof __APP_NAME__ !== 'undefined' && __APP_NAME__) || 'Lagom.Dezign';
 const [BRAND_FIRST, ...BRAND_REST_WORDS] = APP_NAME.split(' ');
@@ -28,7 +30,7 @@ function OrderThumb({ item, products }) {
   if (!item) return null;
   const product = products.find((p) => p.id === item.productId);
   if (product?.thumb_url) {
-    return <img src={product.thumb_url} alt={product.name} className="admin-order-photo" />;
+    return <img loading="lazy" decoding="async" src={product.thumb_url} alt={product.name} className="admin-order-photo" />;
   }
   if (!product) {
     return (
@@ -76,13 +78,13 @@ const rupees = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { minimumF
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Lead time shown on product pages — every piece is hand-poured to order.
-const LEAD_TIME = 'Made to order · ships in 5–7 days';
+const LEAD_TIME = 'Made to order · ships in 10–15 days';
 
 // Contact details for the footer / customer questions.
 export const CONTACT = {
-  email: 'hello@lagomdezign.com',
+  email: __SUPPORT_EMAIL__ || 'hello@lagomdezign.com',
   instagram: 'https://instagram.com/lagom.dezign',
-  whatsapp: 'https://wa.me/919000000000',
+  whatsapp: __SUPPORT_WHATSAPP__ || 'https://wa.me/919000000000',
 };
 
 // ─── SEO HELPERS (meta description + structured data) ────────────────────────
@@ -102,9 +104,9 @@ function useMeta(title, description) {
   }, [title, description]);
 }
 
-const SITE_URL = (typeof window !== 'undefined' && window.location.origin.startsWith('http'))
+const SITE_URL = (__SITE_URL__ || ((typeof window !== 'undefined' && window.location.origin.startsWith('http'))
   ? window.location.origin
-  : 'https://lagomdezign.com';
+  : 'https://lagom-dezign.vercel.app')).replace(/\/$/, '');
 
 // Injects a JSON-LD script tag into <head>. `id` keeps it deduplicated per route.
 function injectJsonLd(id, data) {
@@ -132,9 +134,9 @@ function useLocalBusinessSchema() {
       description: 'Hand-poured resin souvenirs and personalised keepsakes, made to order.',
       url: SITE_URL,
       email: CONTACT.email,
-      telephone: '+91-90000-00000',
+      telephone: '+' + CONTACT.whatsapp.replace(/\D/g, ''),
       priceRange: '₹₹',
-      image: `${SITE_URL}/favicon.ico`,
+      image: `${SITE_URL}/favicon.svg`,
       address: { '@type': 'PostalAddress', addressCountry: 'IN' },
       sameAs: [CONTACT.instagram],
       openingHoursSpecification: {
@@ -159,7 +161,7 @@ function Breadcrumbs({ items, wide = false }) {
       '@type': 'ListItem',
       position: i + 1,
       name: it.label,
-      ...(it.href ? { item: `${SITE_URL}/${it.href}` } : {}),
+      ...(it.href ? { item: `${SITE_URL}${it.href}` } : {}),
     })),
   };
   useEffect(() => {
@@ -201,7 +203,7 @@ const FAQS = [
   },
   {
     q: 'How long does shipping take?',
-    a: 'Every order is made to order and ships within 5–7 days. Delivery usually takes another 2–5 days depending on your pincode in India. You\'ll receive tracking details once your parcel is dispatched.',
+    a: 'Every order is made to order and ships within 10–15 days. Delivery usually takes another 2–5 days depending on your pincode in India. You\'ll receive tracking details once your parcel is dispatched.',
   },
   {
     q: 'What is your return policy?',
@@ -251,9 +253,9 @@ function FAQ() {
 function StickyMobileCTA({ cartCount }) {
   return (
     <div className="sticky-mobile-cta" role="navigation" aria-label="Quick actions">
-      <a href="#/shop" className="smc-btn">🛍 Shop</a>
+      <a href="/shop" className="smc-btn">🛍 Shop</a>
       <a href={CONTACT.whatsapp} target="_blank" rel="noreferrer" className="smc-btn">💬 Chat</a>
-      <a href="#/cart" className="smc-btn smc-primary">
+      <a href="/cart" className="smc-btn smc-primary">
         Cart{cartCount > 0 && <span className="cart-count">{cartCount}</span>}
       </a>
     </div>
@@ -302,6 +304,13 @@ function Toast({ message }) {
   return <div className="toast" role="status">{message}</div>;
 }
 
+function ApiFailure({ message, onRetry, onDismiss }) {
+  return <div className="api-failure" role="alert"><p>{message}</p><div>
+    {onRetry && <button type="button" className="btn btn-sm btn-ghost" onClick={onRetry}>Try again</button>}
+    {onDismiss && <button type="button" className="btn btn-sm btn-ghost" onClick={onDismiss}>Dismiss</button>}
+  </div></div>;
+}
+
 // ─── FOOTER ───────────────────────────────────────────────────────────────────
 
 function Footer() {
@@ -314,15 +323,17 @@ function Footer() {
         </div>
         <div className="footer-col">
           <h4>Shop</h4>
-          <a href="#/shop">The Collection</a>
-          <a href="#/cart">Your Cart</a>
-          <a href="#/orders">My Orders</a>
+          <a href="/shop">The Collection</a>
+          <a href="/cart">Your Cart</a>
+          <a href="/orders">My Orders</a>
         </div>
         <div className="footer-col">
           <h4>Help</h4>
-          <a href="#/shop">Shipping &amp; Delivery</a>
-          <a href="#/shop">Returns &amp; Refunds</a>
-          <a href="#/auth">My Account</a>
+          <a href="/shipping">Shipping &amp; Delivery</a>
+          <a href="/returns">Returns &amp; Refunds</a>
+          <a href="/privacy">Privacy Policy</a>
+          <a href="/terms">Terms of Service</a>
+          <a href="/auth">My Account</a>
         </div>
         <div className="footer-col">
           <h4>Get in touch</h4>
@@ -340,17 +351,21 @@ function Footer() {
 
 // ─── ROUTING ──────────────────────────────────────────────────────────────────
 
-function useHashRoute() {
-  const [route, setRoute] = useState(window.location.hash.slice(1) || '/');
+function useRoute() {
+  const [route, setRoute] = useState(currentRoute);
   useEffect(() => {
-    const onChange = () => setRoute(window.location.hash.slice(1) || '/');
-    window.addEventListener('hashchange', onChange);
-    return () => window.removeEventListener('hashchange', onChange);
+    const update = () => { setRoute(currentRoute()); window.scrollTo(0, 0); };
+    document.addEventListener('click', interceptLink);
+    window.addEventListener('popstate', update);
+    window.addEventListener('hashchange', update);
+    return () => {
+      document.removeEventListener('click', interceptLink);
+      window.removeEventListener('popstate', update);
+      window.removeEventListener('hashchange', update);
+    };
   }, []);
   return route;
 }
-
-const go = (path) => (window.location.hash = '#' + path);
 
 // ─── WAVES (landing decoration) ───────────────────────────────────────────────
 
@@ -398,16 +413,10 @@ function Bubbles() {
 
 function Stars({ value, onChange }) {
   return (
-    <span className={onChange ? 'stars stars-input' : 'stars'}>
+    <span className={onChange ? 'stars stars-input' : 'stars'} role={onChange ? 'group' : 'img'} aria-label={onChange ? 'Choose a rating' : `${value} out of 5 stars`}>
       {[1, 2, 3, 4, 5].map((n) => (
-        <span
-          key={n}
-          className={n <= value ? 'star filled' : 'star'}
-          onClick={onChange ? () => onChange(n) : undefined}
-          role={onChange ? 'button' : undefined}
-        >
-          ★
-        </span>
+        onChange ? <button type="button" key={n} className={n <= value ? 'star filled' : 'star'} aria-label={`${n} star${n === 1 ? '' : 's'}`} aria-pressed={value === n} onClick={() => onChange(n)}>★</button>
+        : <span key={n} className={n <= value ? 'star filled' : 'star'} aria-hidden="true">★</span>
       ))}
     </span>
   );
@@ -421,7 +430,7 @@ function ProductReviews({ productId, session }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetchReviews(productId).then(setReviews).catch(() => setReviews([]));
+    fetchReviews(productId).then(setReviews).catch(error => { reportApiError(error); setReviews([]); });
   }, [productId]);
 
   async function submit(e) {
@@ -471,6 +480,7 @@ function ProductReviews({ productId, session }) {
             <span style={{ fontSize: 12, color: 'var(--slate)' }}>Rate this product</span>
           </div>
           <textarea
+            aria-label="Your review"
             className="review-input"
             value={text}
             onChange={(e) => setText(e.target.value.slice(0, 1000))}
@@ -482,7 +492,7 @@ function ProductReviews({ productId, session }) {
         </form>
       ) : (
         <p style={{ fontSize: 12, color: 'var(--slate)', marginTop: 8 }}>
-          <a href="#/auth" style={{ color: 'var(--ocean)' }}>Login</a> to write a review.
+          <a href="/auth" style={{ color: 'var(--ocean)' }}>Login</a> to write a review.
         </p>
       )}
     </div>
@@ -511,12 +521,12 @@ function Carousel({ products = [] }) {
   if (count === 0) return null;
 
   // A slide links to its product when the asset filename starts with the product
-  // id (e.g. `9-bookstand.jpg` → #/product/9). Unmatched slides just aren't clickable.
+  // id (e.g. `9-bookstand.jpg` → /product/9). Unmatched slides just aren't clickable.
   const slideFor = (src) => {
     const file = src.split('/').pop() || '';
     const id = file.match(/^(\d+)-/)?.[1];
     const product = id && products.find((p) => String(p.id) === id);
-    return product ? { href: `#/product/${product.id}`, name: product.name } : null;
+    return product ? { href: `/product/${product.id}`, name: product.name } : null;
   };
 
   return (
@@ -527,7 +537,7 @@ function Carousel({ products = [] }) {
           const slide = slideFor(src);
           return slide ? (
             <a key={src} href={slide.href} className={i === index ? 'slide active slide-link' : 'slide slide-link'} aria-label={`View ${slide.name}`}>
-              <img src={src} alt={slide.name} />
+              <img loading="lazy" decoding="async" src={src} alt={slide.name} />
               <span className="slide-caption">{slide.name}</span>
             </a>
           ) : (
@@ -649,18 +659,18 @@ function AuthPage({ onLogin }) {
       {mode === 'signup' && (
         <form onSubmit={handleSignup}>
           <div className="field">
-            <label>Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Your name" />
+            <label htmlFor="field-1">Name</label>
+            <input id="field-1" value={name} onChange={(e) => setName(e.target.value)} required placeholder="Your name" />
           </div>
           <div className="field">
-            <label>Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
+            <label htmlFor="field-2">Email</label>
+            <input id="field-2" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
           </div>
           <div className="field">
-            <label>Password</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} placeholder="At least 6 characters" />
+            <label htmlFor="field-3">Password</label>
+            <input id="field-3" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} placeholder="At least 6 characters" />
           </div>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="btn" style={{ width: '100%' }} disabled={loading}>
             {loading ? 'Sending code…' : 'Create account'}
           </button>
@@ -670,14 +680,14 @@ function AuthPage({ onLogin }) {
       {mode === 'login' && (
         <form onSubmit={handleLogin}>
           <div className="field">
-            <label>Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
+            <label htmlFor="field-4">Email</label>
+            <input id="field-4" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
           </div>
           <div className="field">
-            <label>Password</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required placeholder="Your password" />
+            <label htmlFor="field-5">Password</label>
+            <input id="field-5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required placeholder="Your password" />
           </div>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="btn" style={{ width: '100%' }} disabled={loading}>
             {loading ? 'Logging in…' : 'Login'}
           </button>
@@ -698,10 +708,10 @@ function AuthPage({ onLogin }) {
             Enter your email and we'll send you a reset code.
           </p>
           <div className="field">
-            <label>Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" autoFocus />
+            <label htmlFor="field-6">Email</label>
+            <input id="field-6" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" autoFocus />
           </div>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="btn" style={{ width: '100%' }} disabled={loading}>
             {loading ? 'Sending code…' : 'Send reset code'}
           </button>
@@ -718,8 +728,10 @@ function AuthPage({ onLogin }) {
           </p>
           {info && <p className="success">{info}</p>}
           <div className="field">
-            <label>Reset code</label>
-            <input
+            <label htmlFor="field-7">Reset code</label>
+            <input id="field-7"
+              aria-label="Verification code"
+              autoComplete="one-time-code"
               className="otp-input"
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
@@ -730,10 +742,10 @@ function AuthPage({ onLogin }) {
             />
           </div>
           <div className="field">
-            <label>New password</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} placeholder="At least 6 characters" />
+            <label htmlFor="field-8">New password</label>
+            <input id="field-8" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} placeholder="At least 6 characters" />
           </div>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="btn" style={{ width: '100%' }} disabled={loading || code.length !== 6}>
             {loading ? 'Resetting…' : 'Reset password & login'}
           </button>
@@ -751,6 +763,8 @@ function AuthPage({ onLogin }) {
           {info && <p className="success">{info}</p>}
           <div className="field">
             <input
+              aria-label="Verification code"
+              autoComplete="one-time-code"
               className="otp-input"
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
@@ -760,7 +774,7 @@ function AuthPage({ onLogin }) {
               autoFocus
             />
           </div>
-          {error && <p className="error">{error}</p>}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="btn" style={{ width: '100%' }} disabled={loading || code.length !== 6}>
             {loading ? 'Verifying…' : 'Verify & continue'}
           </button>
@@ -780,7 +794,7 @@ function Landing({ products, loading }) {
   const featured = products.filter((p) => p.in_stock && p.featured).slice(0, 3);
   const [quotes, setQuotes] = useState([]);
   useEffect(() => {
-    fetchFeaturedReviews().then(setQuotes).catch(() => {});
+    fetchFeaturedReviews().then(setQuotes).catch(reportApiError);
   }, []);
   useMeta(
     `${APP_NAME} — Souvenirs that flow with your memories`,
@@ -830,7 +844,7 @@ function Landing({ products, loading }) {
                 <figcaption>
                   — {q.user_name}
                   {q.product_name && (
-                    <span> · {q.product_id ? <a href={`#/product/${q.product_id}`}>{q.product_name}</a> : q.product_name}</span>
+                    <span> · {q.product_id ? <a href={`/product/${q.product_id}`}>{q.product_name}</a> : q.product_name}</span>
                   )}
                 </figcaption>
               </figure>
@@ -857,7 +871,7 @@ function ProductCard({ product, onAdd }) {
       if (!reviews || reviews.length === 0) return setRatingSummary(null);
       const avg = reviews.reduce((s, r) => s + r.rating, 0) / reviews.length;
       setRatingSummary({ avg: Math.round(avg), count: reviews.length });
-    }).catch(() => {});
+    }).catch(reportApiError);
     return () => { alive = false; };
   }, [product.id]);
 
@@ -869,9 +883,9 @@ function ProductCard({ product, onAdd }) {
 
   return (
     <div className="card product-card">
-      <a href={`#/product/${product.id}`} className="product-thumb" aria-label={`View ${product.name}`}>
+      <a href={`/product/${product.id}`} className="product-thumb" aria-label={`View ${product.name}`}>
         {product.thumb_url ? (
-          <img src={product.thumb_url} alt={product.name} />
+          <img loading="lazy" decoding="async" src={product.thumb_url} alt={product.name} />
         ) : (
           <div className="img-placeholder no-image">No Image</div>
         )}
@@ -886,7 +900,7 @@ function ProductCard({ product, onAdd }) {
           </span>
         )}
         {product.description && <span className="desc">{product.description}</span>}
-        <a href={`#/product/${product.id}`} className="link-btn" style={{ alignSelf: 'flex-start' }}>
+        <a href={`/product/${product.id}`} className="link-btn" style={{ alignSelf: 'flex-start' }}>
           View details →
         </a>
         {(product.tags || []).length > 0 && (
@@ -905,8 +919,8 @@ function ProductCard({ product, onAdd }) {
         </span>
         {!product.in_stock && <span className="badge badge-oos">Out of stock</span>}
         {onAdd && product.in_stock && (
-          hasDimensions ? (
-            <a href={`#/product/${product.id}`} className="btn btn-sm">Choose size</a>
+          hasDimensions || product.customizable ? (
+            <a href={`/product/${product.id}`} className="btn btn-sm">{hasDimensions ? 'Choose size' : 'Personalise'}</a>
           ) : (
             <button className="btn btn-sm" onClick={add}>
               {added ? 'Added ✓' : 'Add to Cart'}
@@ -921,14 +935,25 @@ function ProductCard({ product, onAdd }) {
 // ─── PRODUCT DETAILS ────────────────────────────────────────────────────────
 
 function ProductDetails({ id, products, loading, onAdd, session }) {
-  const product = products.find((p) => p.id === id);
+  const [product, setProduct] = useState(null);
+  const [detailError, setDetailError] = useState('');
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    setProduct(null); setDetailError(''); setDetailLoading(true);
+    fetchProduct(id).then(p => { if (alive) setProduct(p); })
+      .catch(error => { if (alive) setDetailError(error.message); })
+      .finally(() => { if (alive) setDetailLoading(false); });
+    return () => { alive = false; };
+  }, [id, retry]);
   const [active, setActive] = useState(0);
   const [message, setMessage] = useState('');
   const [added, setAdded] = useState(false);
   const [dimIdx, setDimIdx] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
-  useEffect(() => { setActive(0); setDimIdx(0); setLightboxOpen(false); }, [id]);
+  useEffect(() => { setActive(0); setDimIdx(0); setMessage(''); setLightboxOpen(false); }, [id]);
 
   useEffect(() => {
     if (!lightboxOpen) return;
@@ -942,14 +967,25 @@ function ProductDetails({ id, products, loading, onAdd, session }) {
     product ? `${product.name} — ${APP_NAME}` : `Product — ${APP_NAME}`,
     product ? `${product.name} — hand-poured resin keepsake from ${APP_NAME}. ${product.description || 'Personalised, made to order and shipped across India.'} From ${rupees(product.price_paise)}.` : 'Explore hand-poured resin keepsakes and personalised gifts.'
   );
+  useEffect(() => {
+    if (!product) return;
+    injectJsonLd('ld-product', {
+      '@context': 'https://schema.org', '@type': 'Product', name: product.name,
+      description: product.description, image: (product.images || []).map(photo => new URL(toPhoto(photo).full, SITE_URL).href),
+      offers: { '@type': 'Offer', url: `${SITE_URL}/product/${product.id}`, priceCurrency: 'INR', price: (product.price_paise / 100).toFixed(2), availability: `https://schema.org/${product.in_stock ? 'InStock' : 'OutOfStock'}` },
+    });
+    return () => removeJsonLd('ld-product');
+  }, [product]);
 
   if (!product) {
     return (
       <div className="page">
-        {loading ? (
+        {detailLoading ? (
           <Spinner />
+        ) : detailError ? (
+          <ApiFailure message={detailError} onRetry={() => setRetry(n => n + 1)} />
         ) : (
-          <p className="empty">That product isn't available anymore. <a href="#/shop" style={{ color: 'var(--ocean)', fontWeight: 700 }}>Browse the collection →</a></p>
+          <p className="empty">That product isn't available anymore. <a href="/shop" style={{ color: 'var(--ocean)', fontWeight: 700 }}>Browse the collection →</a></p>
         )}
       </div>
     );
@@ -969,13 +1005,14 @@ function ProductDetails({ id, products, loading, onAdd, session }) {
 
   return (
     <>
-      <Breadcrumbs wide items={[{ label: 'Home', href: '#/' }, { label: 'Shop', href: '#/shop' }, { label: product.name }]} />
+      <Breadcrumbs wide items={[{ label: 'Home', href: '/' }, { label: 'Shop', href: '/shop' }, { label: product.name }]} />
       <div className="page" style={{ maxWidth: 1140 }}>
-        <a href="#/shop" className="link-btn">← Back to shop</a>
+        <a href="/shop" className="link-btn">← Back to shop</a>
       <div className="product-details">
         <div className="pd-gallery">
           {images.length > 0 ? (
-            <div className="pd-photo-wrap pd-zoomable" onClick={() => setLightboxOpen(true)}>
+            <div className="pd-photo-wrap pd-zoomable">
+              <button className="pd-open-photo" type="button" onClick={() => setLightboxOpen(true)} aria-label={`Enlarge ${product.name} photo ${active + 1}`} />
               <img src={images[active].full} alt={`${product.name} photo ${active + 1}`} className="pd-photo" />
               <span className="pd-zoom-hint">🔍 Click to enlarge</span>
               {images.length > 1 && (
@@ -995,7 +1032,7 @@ function ProductDetails({ id, products, loading, onAdd, session }) {
           )}
         </div>
         {lightboxOpen && images.length > 0 && (
-          <div className="lightbox-backdrop" onClick={() => setLightboxOpen(false)}>
+          <FocusDialog className="lightbox-backdrop" label={`${product.name} photos`} onClose={() => setLightboxOpen(false)}>
             <button type="button" className="lightbox-close" onClick={() => setLightboxOpen(false)} aria-label="Close">×</button>
             <img src={images[active].full} alt={`${product.name} photo ${active + 1}`} className="lightbox-img" onClick={(e) => e.stopPropagation()} />
             {images.length > 1 && (
@@ -1004,7 +1041,7 @@ function ProductDetails({ id, products, loading, onAdd, session }) {
                 <button type="button" className="carousel-arrow next" onClick={(e) => { e.stopPropagation(); setActive((active + 1) % images.length); }} aria-label="Next photo">›</button>
               </>
             )}
-          </div>
+          </FocusDialog>
         )}
         <div className="pd-info">
           <h1>{product.name}</h1>
@@ -1038,10 +1075,11 @@ function ProductDetails({ id, products, loading, onAdd, session }) {
             <>
               {product.customizable && (
                 <div className="field">
-                  <label>{product.custom_label || 'Your message'}</label>
-                  <input
+                  <label htmlFor="field-9">{product.custom_label || 'Your message'}</label>
+                  <input id="field-9"
                     value={message}
                     onChange={(e) => setMessage(e.target.value.slice(0, 200))}
+                    aria-label={product.custom_label || 'Your message'}
                     placeholder="e.g. Happy Birthday Asha!"
                   />
                 </div>
@@ -1096,7 +1134,7 @@ function Shop({ products, loading, onAdd }) {
 
   return (
     <>
-      <Breadcrumbs items={[{ label: 'Home', href: '#/' }, { label: 'Shop' }]} />
+      <Breadcrumbs items={[{ label: 'Home', href: '/' }, { label: 'Shop' }]} />
       <div className="page">
       <h1>The Collection</h1>
       {loading ? (
@@ -1107,6 +1145,7 @@ function Shop({ products, loading, onAdd }) {
         <>
           <div className="shop-toolbar">
             <input
+              aria-label="Search products"
               type="search"
               className="shop-search"
               placeholder="Search by name, event or description…"
@@ -1169,7 +1208,7 @@ function Cart({ cart, setCart, session }) {
       <div className="page">
         <h1>Your Cart</h1>
         <p className="empty">
-          Your cart is empty. <a href="#/shop" style={{ color: 'var(--ocean)', fontWeight: 600 }}>Browse the collection →</a>
+          Your cart is empty. <a href="/shop" style={{ color: 'var(--ocean)', fontWeight: 600 }}>Browse the collection →</a>
         </p>
       </div>
     );
@@ -1191,9 +1230,9 @@ function Cart({ cart, setCart, session }) {
               )}
             </div>
             <div className="qty-controls">
-              <button onClick={() => setQty(idx, item.qty - 1)}>−</button>
+              <button aria-label={`Decrease quantity of ${item.name}`} onClick={() => setQty(idx, item.qty - 1)}>−</button>
               <span>{item.qty}</span>
-              <button onClick={() => setQty(idx, item.qty + 1)}>+</button>
+              <button aria-label={`Increase quantity of ${item.name}`} onClick={() => setQty(idx, item.qty + 1)}>+</button>
             </div>
             <strong style={{ minWidth: 90, textAlign: 'right' }}>{rupees(item.price_paise * item.qty)}</strong>
           </div>
@@ -1202,7 +1241,7 @@ function Cart({ cart, setCart, session }) {
           <strong>Total</strong>
           <strong style={{ color: 'var(--ocean)' }}>{rupees(total)}</strong>
         </div>
-        <button className="btn" style={{ width: '100%', marginTop: 18 }} onClick={() => go(session ? '/checkout' : '/auth')}>
+        <button className="btn" style={{ width: '100%', marginTop: 18 }} onClick={() => go(session ? '/checkout' : '/auth?returnTo=%2Fcheckout')}>
           {session ? 'Proceed to checkout →' : 'Login to checkout →'}
         </button>
       </div>
@@ -1235,14 +1274,14 @@ function AddressForm({ address, setAddress }) {
   const set = (k) => (e) => setAddress({ ...address, [k]: e.target.value });
   return (
     <>
-      <div className="field"><label>House Name / Door Number</label><input value={address.label || ''} onChange={set('label')} placeholder="e.g. Home, Office" /></div>
-      <div className="field"><label>Address line 1 *</label><input value={address.line1} onChange={set('line1')} required /></div>
-      <div className="field"><label>Address line 2</label><input value={address.line2} onChange={set('line2')} /></div>
+      <div className="field"><label htmlFor="field-10">House Name / Door Number</label><input id="field-10" value={address.label || ''} onChange={set('label')} placeholder="e.g. Home, Office" /></div>
+      <div className="field"><label htmlFor="field-11">Address line 1 *</label><input id="field-11" value={address.line1} onChange={set('line1')} required /></div>
+      <div className="field"><label htmlFor="field-12">Address line 2</label><input id="field-12" value={address.line2} onChange={set('line2')} /></div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div className="field"><label>City *</label><input value={address.city} onChange={set('city')} required /></div>
-        <div className="field"><label>State</label><input value={address.state} onChange={set('state')} /></div>
-        <div className="field"><label>PIN code *</label><input value={address.pincode} onChange={set('pincode')} required pattern="[0-9]{6}" title="6-digit PIN code" /></div>
-        <div className="field"><label>Phone</label><input value={address.phone} onChange={set('phone')} /></div>
+        <div className="field"><label htmlFor="field-13">City *</label><input id="field-13" value={address.city} onChange={set('city')} required /></div>
+        <div className="field"><label htmlFor="field-14">State</label><input id="field-14" value={address.state} onChange={set('state')} /></div>
+        <div className="field"><label htmlFor="field-15">PIN code *</label><input id="field-15" value={address.pincode} onChange={set('pincode')} required pattern="[0-9]{6}" title="6-digit PIN code" /></div>
+        <div className="field"><label htmlFor="field-16">Phone</label><input id="field-16" value={address.phone} onChange={set('phone')} /></div>
       </div>
     </>
   );
@@ -1257,9 +1296,33 @@ function Checkout({ cart, setCart }) {
   const [error, setError] = useState('');
   const [placing, setPlacing] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [quote, setQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState('');
+  const [quoteLoading, setQuoteLoading] = useState(true);
+  const [quoteRetry, setQuoteRetry] = useState(0);
+  const [quoteExpired, setQuoteExpired] = useState(false);
 
-  const total = cart.reduce((sum, item) => sum + item.price_paise * item.qty, 0);
-  const upiLink = buildUpiLink(total);
+  useEffect(() => {
+    let alive = true;
+    setQuote(null); setQuoteError(''); setQuoteLoading(true); setQuoteExpired(false);
+    if (!cart.length) { setQuoteLoading(false); return; }
+    quoteCart(cart.map(i => ({ productId: i.productId, qty: i.qty, dimension: i.dimension || null, message: i.message || '' })))
+      .then(result => {
+        if (!alive) return;
+        if (result.ok) setQuote(result.data);
+        else setQuoteError(result.data.error || 'Could not check current prices.');
+      }).finally(() => { if (alive) setQuoteLoading(false); });
+    return () => { alive = false; };
+  }, [cart, quoteRetry]);
+
+  useEffect(() => {
+    if (!quote) return;
+    const timer = setTimeout(() => setQuoteExpired(true), Math.max(0, quote.expires_at - Date.now()));
+    return () => clearTimeout(timer);
+  }, [quote]);
+
+  const total = quote?.total_paise || 0;
+  const upiLink = quote ? buildUpiLink(total, quote.upi_id) : '';
 
   useEffect(() => {
     fetchProfile()
@@ -1272,7 +1335,7 @@ function Checkout({ cart, setCart }) {
         }
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch(error => { reportApiError(error); setLoaded(true); });
   }, []);
 
   function pick(idx) {
@@ -1282,6 +1345,7 @@ function Checkout({ cart, setCart }) {
 
   async function placeOrder(e) {
     e.preventDefault();
+    if (!quote || quoteExpired || quote.expires_at <= Date.now()) { setError('Refresh current prices before paying. If you already paid, contact support with your UTR.'); return; }
     setError('');
     setPlacing(true);
     const { ok, data } = await apiPlaceOrder({
@@ -1289,6 +1353,7 @@ function Checkout({ cart, setCart }) {
       address,
       upi_ref: upiRef,
       transaction_date: transactionDate,
+      quote_token: quote.quote_token,
     });
     if (ok) {
       setCart([]);
@@ -1302,7 +1367,7 @@ function Checkout({ cart, setCart }) {
   if (cart.length === 0) {
     return (
       <div className="page">
-        <p className="empty">Nothing to check out. <a href="#/shop" style={{ color: 'var(--ocean)', fontWeight: 700 }}>Browse the shop →</a></p>
+        <p className="empty">Nothing to check out. <a href="/shop" style={{ color: 'var(--ocean)', fontWeight: 700 }}>Browse the shop →</a></p>
       </div>
     );
   }
@@ -1313,7 +1378,7 @@ function Checkout({ cart, setCart }) {
       <form onSubmit={placeOrder}>
         <div className="card" style={{ marginBottom: 20 }}>
           <h2 style={{ marginTop: 0 }}>Order summary</h2>
-          {cart.map((item, idx) => (
+          {(quote?.items || cart).map((item, idx) => (
             <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}>
               <span>
                 {item.name}{item.dimension && ` — Size: ${item.dimension}`} × {item.qty}
@@ -1324,8 +1389,10 @@ function Checkout({ cart, setCart }) {
           ))}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 17 }}>
             <strong>Total</strong>
-            <strong style={{ color: 'var(--ocean)' }}>{rupees(total)}</strong>
+            <strong style={{ color: 'var(--ocean)' }}>{quote ? rupees(total) : quoteError ? 'Unavailable' : 'Checking prices…'}</strong>
           </div>
+          <p className="pd-note">Shipping included. Current prices are checked before payment.</p>
+          {quote && quote.total_paise !== cart.reduce((sum, item) => sum + item.price_paise * item.qty, 0) && <p role="status">Prices have changed since items were added. The updated total above is the amount to pay.</p>}
         </div>
 
         <div className="card" style={{ marginBottom: 20 }}>
@@ -1355,30 +1422,30 @@ function Checkout({ cart, setCart }) {
             </>
           )}
           <p style={{ fontSize: 12, color: 'var(--slate)' }}>
-            Changes here apply to this order only. Manage saved addresses in your <a href="#/profile" style={{ color: 'var(--ocean)' }}>profile</a>.
+            Changes here apply to this order only. Manage saved addresses in your <a href="/profile" style={{ color: 'var(--ocean)' }}>profile</a>.
           </p>
         </div>
 
         <div className="card" style={{ marginBottom: 20 }}>
           <h2 style={{ marginTop: 0 }}>Pay via UPI</h2>
+          {quoteLoading ? <p role="status">Checking current prices and availability…</p> : quoteError || quoteExpired ? <ApiFailure message={quoteError || 'This payment quote has expired. If you already paid, contact support with your UTR before refreshing or paying again.'} onRetry={() => setQuoteRetry(n => n + 1)} /> : quote && <>
           <div className="upi-box">
             <p style={{ fontSize: 13, color: 'var(--slate)', marginBottom: 6 }}>
               Pay <strong>{rupees(total)}</strong> to:
             </p>
-            <p className="upi-id">{UPI_ID}</p>
+            <p className="upi-id">{quote.upi_id}</p>
             <UpiQr value={upiLink} />
             <p style={{ fontSize: 12, color: 'var(--slate)' }}>
               Scan with any UPI app — GPay, PhonePe, Paytm — or tap below on your phone.
             </p>
-            <a href={upiLink}>
-              <button type="button" className="btn btn-sm" style={{ marginTop: 12 }}>
+            <a href={upiLink} className="btn btn-sm" style={{ marginTop: 12, display: 'inline-block' }}>
                 Open UPI App
-              </button>
             </a>
+            <p className="pd-note">This amount is held for 30 minutes. Submit your UTR after payment; receipt of funds is checked manually.</p>
           </div>
           <div className="field">
-            <label>UPI transaction reference (UTR) *</label>
-            <input
+            <label htmlFor="field-17">UPI transaction reference (UTR) *</label>
+            <input id="field-17"
               value={upiRef}
               onChange={(e) => setUpiRef(e.target.value)}
               required
@@ -1390,14 +1457,15 @@ function Checkout({ cart, setCart }) {
             </span>
           </div>
           <div className="field">
-            <label>Payment date *</label>
-            <input type="date" value={transactionDate} onChange={(e) => setTransactionDate(e.target.value)} required />
+            <label htmlFor="field-18">Payment date *</label>
+            <input id="field-18" type="date" value={transactionDate} onChange={(e) => setTransactionDate(e.target.value)} required />
           </div>
+          </>}
         </div>
 
-        {error && <p className="error">{error}</p>}
-        <button className="btn" style={{ width: '100%' }} disabled={placing}>
-          {placing ? 'Placing order…' : `Place order — ${rupees(total)}`}
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="btn" style={{ width: '100%' }} disabled={placing || quoteLoading || !quote || quoteExpired || !!quoteError}>
+          {placing ? 'Placing order…' : quote ? `Place order — ${rupees(total)}` : quoteError ? 'Checkout unavailable' : 'Waiting for current prices'}
         </button>
       </form>
     </div>
@@ -1413,9 +1481,9 @@ function MyOrders() {
   const [fixError, setFixError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = () => fetchMyOrders().then(setOrders).catch(() => setOrders([]));
+  const load = () => fetchMyOrders().then(setOrders).catch(error => { reportApiError(error); setOrders([]); });
   useEffect(() => { load(); }, []);
-  useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); }, []);
+  useEffect(() => { fetchProducts().then(setProducts).catch(reportApiError); }, []);
 
   async function resubmit(e, order) {
     e.preventDefault();
@@ -1462,7 +1530,7 @@ function MyOrders() {
                           <div><span className="order-sublabel">Size:</span> {item.dimension}</div>
                         )}
                         {product && (
-                          <div><a href={`#/product/${item.productId}`} className="link-btn">View product</a></div>
+                          <div><a href={`/product/${item.productId}`} className="link-btn">View product</a></div>
                         )}
                         {item.message && (
                           <div><span className="order-sublabel">Message:</span> <em>“{item.message}”</em></div>
@@ -1533,8 +1601,8 @@ function MyOrders() {
                 {fixing?.orderId === o.id ? (
                   <form onSubmit={(e) => resubmit(e, o)} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                     <div className="field" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
-                      <label>UPI transaction reference (UTR)</label>
-                      <input
+                      <label htmlFor="field-19">UPI transaction reference (UTR)</label>
+                      <input id="field-19"
                         value={fixing.upi_ref}
                         onChange={(e) => setFixing({ ...fixing, upi_ref: e.target.value })}
                         required
@@ -1544,8 +1612,8 @@ function MyOrders() {
                       />
                     </div>
                     <div className="field" style={{ marginBottom: 0 }}>
-                      <label>Payment date</label>
-                      <input
+                      <label htmlFor="field-20">Payment date</label>
+                      <input id="field-20"
                         type="date"
                         value={fixing.transaction_date}
                         onChange={(e) => setFixing({ ...fixing, transaction_date: e.target.value })}
@@ -1608,7 +1676,7 @@ function Profile({ session }) {
         }
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch(error => { reportApiError(error); setLoaded(true); });
   }, []);
 
   async function persist(nextName, nextAddresses) {
@@ -1651,12 +1719,12 @@ function Profile({ session }) {
         <>
           <form onSubmit={saveName} className="card" style={{ marginBottom: 20 }}>
             <div className="field">
-              <label>Email</label>
-              <input value={session.email} disabled style={{ background: 'var(--foam)' }} />
+              <label htmlFor="field-21">Email</label>
+              <input id="field-21" value={session.email} disabled style={{ background: 'var(--foam)' }} />
             </div>
             <div className="field">
-              <label>Name *</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} required />
+              <label htmlFor="field-22">Name *</label>
+              <input id="field-22" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
           </form>
@@ -1664,8 +1732,8 @@ function Profile({ session }) {
           <form onSubmit={changePw} className="card" style={{ marginBottom: 20 }}>
             <h2 style={{ marginTop: 0 }}>Change password</h2>
             <div className="field">
-              <label>Current password *</label>
-              <input
+              <label htmlFor="field-23">Current password *</label>
+              <input id="field-23"
                 type="password"
                 value={pwForm.current}
                 onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })}
@@ -1673,8 +1741,8 @@ function Profile({ session }) {
               />
             </div>
             <div className="field">
-              <label>New password *</label>
-              <input
+              <label htmlFor="field-24">New password *</label>
+              <input id="field-24"
                 type="password"
                 value={pwForm.next}
                 onChange={(e) => setPwForm({ ...pwForm, next: e.target.value })}
@@ -1684,7 +1752,7 @@ function Profile({ session }) {
             </div>
             <button className="btn" disabled={pwBusy}>{pwBusy ? 'Saving…' : 'Change password'}</button>
             {pwStatus === 'saved' && <p className="success">Password changed ✓</p>}
-            {pwStatus && pwStatus !== 'saved' && <p className="error">{pwStatus}</p>}
+            {pwStatus && pwStatus !== 'saved' && <p className="error" role="alert">{pwStatus}</p>}
           </form>
 
           <div className="card">
@@ -1721,7 +1789,7 @@ function Profile({ session }) {
               </button>
             )}
             {status === 'saved' && <p className="success">Saved ✓</p>}
-            {status === 'error' && <p className="error">Could not save</p>}
+            {status === 'error' && <p className="error" role="alert">Could not save</p>}
           </div>
         </>
       )}
@@ -1847,7 +1915,7 @@ function ImageCropModal({ file, onConfirm, onCancel }) {
       <p style={{ fontSize: 13, color: 'var(--slate)', marginTop: -8 }}>
         Drag to choose what shows in the product card thumbnail. The full photo is kept too, for the product page.
       </p>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
       {img ? (
         <>
           <div
@@ -1869,8 +1937,8 @@ function ImageCropModal({ file, onConfirm, onCancel }) {
             />
           </div>
           <div className="field" style={{ marginTop: 12, marginBottom: 0 }}>
-            <label>Zoom {zoom > 1 && '— drag to reposition sideways and up/down'}</label>
-            <input type="range" min={1} max={CROP_MAX_ZOOM} step={0.01} value={zoom} onChange={onZoomChange} />
+            <label htmlFor="field-25">Zoom {zoom > 1 && '— drag to reposition sideways and up/down'}</label>
+            <input id="field-25" type="range" min={1} max={CROP_MAX_ZOOM} step={0.01} value={zoom} onChange={onZoomChange} />
           </div>
         </>
       ) : !error && <Spinner />}
@@ -1882,12 +1950,40 @@ function ImageCropModal({ file, onConfirm, onCancel }) {
   );
 }
 
+function FocusDialog({ onClose, children, className, label = 'Dialog', style }) {
+  const ref = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement;
+    const dialog = ref.current;
+    const controls = () => [...dialog.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')].filter(el => el.getClientRects().length);
+    (controls()[0] || dialog).focus();
+    const keydown = event => {
+      const dialogs = document.querySelectorAll('[aria-modal="true"]');
+      if (dialogs[dialogs.length - 1] !== dialog) return;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeRef.current(); }
+      if (event.key === 'Tab') {
+        const nodes = controls();
+        const first = nodes[0], last = nodes[nodes.length - 1];
+        if (!first) { event.preventDefault(); dialog.focus(); }
+        else if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    };
+    dialog.addEventListener('keydown', keydown);
+    return () => { dialog.removeEventListener('keydown', keydown); if (previous?.isConnected) previous.focus(); };
+  }, []);
+  return <div ref={ref} className={className} style={style} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>{children}</div>;
+}
+
 function Modal({ onClose, children, maxWidth = 560 }) {
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-panel card" style={{ maxWidth }} onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <FocusDialog className="modal-panel card" label="Product editor" onClose={onClose} style={{ maxWidth }}>
+        <button type="button" className="dialog-close" aria-label="Close dialog" onClick={onClose}>×</button>
         {children}
-      </div>
+      </FocusDialog>
     </div>
   );
 }
@@ -1907,7 +2003,7 @@ function AdminProducts() {
   const [cropQueue, setCropQueue] = useState([]);
 
   const load = useCallback(() => {
-    fetchProducts().then(setProducts);
+    fetchAdminProducts().then(setProducts).catch(reportApiError);
   }, []);
   useEffect(load, [load]);
 
@@ -2086,10 +2182,11 @@ function AdminProducts() {
         <button type="button" className="btn" onClick={openAddForm}>+ Add Product</button>
       </div>
 
-      {listError && <p className="error">{listError}</p>}
+      {listError && <p className="error" role="alert">{listError}</p>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '0 0 18px' }}>
         <input
+          aria-label="Search products"
           type="search"
           className="shop-search"
           style={{ maxWidth: 420, flex: '1 1 320px' }}
@@ -2112,8 +2209,8 @@ function AdminProducts() {
       <Modal onClose={closeForm}>
       <form onSubmit={save}>
         <h2 style={{ marginTop: 0 }}>{editingId ? 'Edit product' : 'Add product'}</h2>
-        <div className="field"><label>Name *</label><input value={form.name} onChange={set('name')} required placeholder="e.g. Photo frame with custom name" /></div>
-        <div className="field"><label>Description</label><textarea value={form.description} onChange={set('description')} rows={2} /></div>
+        <div className="field"><label htmlFor="field-26">Name *</label><input id="field-26" value={form.name} onChange={set('name')} required placeholder="e.g. Photo frame with custom name" /></div>
+        <div className="field"><label htmlFor="field-27">Description</label><textarea id="field-27" value={form.description} onChange={set('description')} rows={2} /></div>
         <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input
             type="checkbox"
@@ -2134,6 +2231,7 @@ function AdminProducts() {
             {form.dimensions.map((d, i) => (
               <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                 <input
+                  aria-label={`Size ${i + 1} name`}
                   placeholder="e.g. 8x10 inches"
                   value={d.label}
                   onChange={(e) => setForm((f) => {
@@ -2144,6 +2242,7 @@ function AdminProducts() {
                   style={{ flex: 2 }}
                 />
                 <input
+                  aria-label={`Size ${i + 1} price in rupees`}
                   type="number" step="0.01" min="0.01" placeholder="Price (₹)"
                   value={d.price}
                   onChange={(e) => setForm((f) => {
@@ -2169,11 +2268,11 @@ function AdminProducts() {
             </button>
           </div>
         ) : (
-          <div className="field"><label>Price (₹) *</label><input type="number" step="0.01" min="0.01" value={form.price} onChange={set('price')} required /></div>
+          <div className="field"><label htmlFor="field-28">Price (₹) *</label><input id="field-28" type="number" step="0.01" min="0.01" value={form.price} onChange={set('price')} required /></div>
         )}
         <div className="field">
-          <label>Tags (comma-separated)</label>
-          <input value={form.tags} onChange={set('tags')} placeholder="e.g. birthday, anniversary, rakhi" />
+          <label htmlFor="field-29">Tags (comma-separated)</label>
+          <input id="field-29" value={form.tags} onChange={set('tags')} placeholder="e.g. birthday, anniversary, rakhi" />
           <span style={{ fontSize: 12, color: 'var(--slate)' }}>Customers can search and filter the shop by these</span>
         </div>
         <div className="field">
@@ -2212,6 +2311,7 @@ function AdminProducts() {
           )}
           {form.images.length < MAX_PRODUCT_PHOTOS && (
             <input
+              aria-label="Upload product photos"
               type="file"
               accept="image/*"
               multiple
@@ -2242,7 +2342,7 @@ function AdminProducts() {
           <label htmlFor="customizable" style={{ cursor: 'pointer' }}>Customer can add a personal message</label>
         </div>
         {form.customizable && (
-          <div className="field"><label>Message prompt shown to customer</label><textarea rows={2} value={form.custom_label} onChange={set('custom_label')} placeholder="e.g. Name to engrave" /></div>
+          <div className="field"><label htmlFor="field-30">Message prompt shown to customer</label><textarea id="field-30" rows={2} value={form.custom_label} onChange={set('custom_label')} placeholder="e.g. Name to engrave" /></div>
         )}
         <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <input type="checkbox" checked={form.in_stock} onChange={set('in_stock')} id="in_stock" style={{ width: 'auto' }} />
@@ -2252,7 +2352,7 @@ function AdminProducts() {
           <input type="checkbox" checked={form.featured} onChange={set('featured')} id="featured" style={{ width: 'auto' }} />
           <label htmlFor="featured" style={{ cursor: 'pointer' }}>Show in Featured Keepsakes on home page</label>
         </div>
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error" role="alert">{error}</p>}
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn" disabled={busy}>
             {busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}
@@ -2418,10 +2518,10 @@ function AdminOrders() {
     fetchAdminOrders(filter).then((list) => {
       setOrders(list);
       setSelected(new Set());
-    });
+    }).catch(reportApiError);
   }, [filter]);
   useEffect(load, [load]);
-  useEffect(() => { fetchProducts().then(setProducts).catch(() => {}); }, []);
+  useEffect(() => { fetchProducts().then(setProducts).catch(reportApiError); }, []);
 
   const { page, setPage, pageCount, slice } = usePager(orders, 10);
   useEffect(() => { setPage(0); }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2549,7 +2649,7 @@ function AdminOrders() {
                           <div><span className="order-sublabel">Size:</span> {item.dimension}</div>
                         )}
                         {product && (
-                          <div><a href={`#/product/${item.productId}`} className="link-btn">View product</a></div>
+                          <div><a href={`/product/${item.productId}`} className="link-btn">View product</a></div>
                         )}
                         {item.message && (
                           <div><span className="order-sublabel">Message:</span> <em style={{ color: 'var(--ocean)' }}>“{item.message}”</em></div>
@@ -2665,16 +2765,16 @@ function AdminOrders() {
                 }}
               >
                 <div className="field" style={{ marginBottom: 0, flex: 1 }}>
-                  <label>Courier</label>
-                  <input value={shipping.courier} onChange={(e) => setShipping({ ...shipping, courier: e.target.value })} required placeholder="Bluedart" />
+                  <label htmlFor="field-31">Courier</label>
+                  <input id="field-31" value={shipping.courier} onChange={(e) => setShipping({ ...shipping, courier: e.target.value })} required placeholder="Bluedart" />
                 </div>
                 <div className="field" style={{ marginBottom: 0, flex: 1 }}>
-                  <label>Tracking ID</label>
-                  <input value={shipping.tracking_id} onChange={(e) => setShipping({ ...shipping, tracking_id: e.target.value })} required placeholder="e.g. 69847712345" />
+                  <label htmlFor="field-32">Tracking ID</label>
+                  <input id="field-32" value={shipping.tracking_id} onChange={(e) => setShipping({ ...shipping, tracking_id: e.target.value })} required placeholder="e.g. 69847712345" />
                 </div>
                 <div className="field" style={{ marginBottom: 0, flex: 1 }}>
-                  <label>Shipped date</label>
-                  <input type="date" value={shipping.shipped_date} onChange={(e) => setShipping({ ...shipping, shipped_date: e.target.value })} required />
+                  <label htmlFor="field-33">Shipped date</label>
+                  <input id="field-33" type="date" value={shipping.shipped_date} onChange={(e) => setShipping({ ...shipping, shipped_date: e.target.value })} required />
                 </div>
                 <button className="btn btn-sm" disabled={busy}>{busy ? 'Shipping…' : 'Ship'}</button>
                 <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => { setShipping(null); setShipError(''); }}>Cancel</button>
@@ -2697,7 +2797,7 @@ function AdminReviews() {
   const [filter, setFilter] = useState('pending');
 
   const load = useCallback(() => {
-    fetchAdminReviews(filter).then(setReviews);
+    fetchAdminReviews(filter).then(setReviews).catch(reportApiError);
   }, [filter]);
   useEffect(load, [load]);
 
@@ -2708,7 +2808,8 @@ function AdminReviews() {
 
   async function patch(review, changes) {
     setBusy(true);
-    await updateReview(review.id, changes);
+    const result = await updateReview(review.id, changes);
+    if (!result.ok) reportApiError(new Error(result.data.error));
     setBusy(false);
     load();
   }
@@ -2716,7 +2817,8 @@ function AdminReviews() {
   async function remove(review) {
     if (!window.confirm(`Delete this review by ${review.user_name}?`)) return;
     setBusy(true);
-    await deleteReview(review.id);
+    const result = await deleteReview(review.id);
+    if (!result.ok) reportApiError(new Error(result.data.error));
     setBusy(false);
     load();
   }
@@ -2749,7 +2851,7 @@ function AdminReviews() {
                 <div>
                   <strong>{r.user_name}</strong>{' '}
                   <span style={{ color: 'var(--slate)', fontSize: 13 }}>
-                    on {r.product_id ? <a href={`#/product/${r.product_id}`}>{r.product_name}</a> : r.product_name}
+                    on {r.product_id ? <a href={`/product/${r.product_id}`}>{r.product_name}</a> : r.product_name}
                   </span>
                   <div style={{ fontSize: 13, color: 'var(--slate)' }}>
                     Review date: {new Date(r.created_at).toLocaleString('en-IN')}
@@ -2795,7 +2897,7 @@ async function startImpersonation(email) {
   if (!token) return false;
   localStorage.setItem(ADMIN_TOKEN_BACKUP_KEY, localStorage.getItem(AUTH_KEY) || '');
   localStorage.setItem(AUTH_KEY, token);
-  window.location.hash = '#/shop';
+  window.history.replaceState(null, '', '/shop');
   window.location.reload();
   return true;
 }
@@ -2804,7 +2906,7 @@ function stopImpersonation() {
   const adminToken = localStorage.getItem(ADMIN_TOKEN_BACKUP_KEY);
   localStorage.removeItem(ADMIN_TOKEN_BACKUP_KEY);
   if (adminToken) localStorage.setItem(AUTH_KEY, adminToken);
-  window.location.hash = '#/admin/users';
+  window.history.replaceState(null, '', '/admin/users');
   window.location.reload();
 }
 
@@ -2813,16 +2915,13 @@ const USER_SORT_DEFAULT_DIR = { name: 'asc', created_at: 'desc', order_count: 'd
 
 function SortTh({ label, sortKey, sort, setSort, sortDefaults = USER_SORT_DEFAULT_DIR }) {
   const active = sort.key === sortKey;
-  return (
-    <th
-      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-      onClick={() => setSort(active
-        ? { key: sortKey, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
-        : { key: sortKey, dir: sortDefaults[sortKey] || 'asc' })}
-    >
-      {label}{active ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
-    </th>
-  );
+  return <th aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+    <button type="button" className="sort-button" onClick={() => setSort(active
+      ? { key: sortKey, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
+      : { key: sortKey, dir: sortDefaults[sortKey] || 'asc' })}>
+      {label}{active ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+    </button>
+  </th>;
 }
 
 function AdminUsers({ session }) {
@@ -2832,7 +2931,7 @@ function AdminUsers({ session }) {
   const [impersonating, setImpersonating] = useState(null); // email currently being impersonated
 
   useEffect(() => {
-    fetchAdminUsers().then(setUsers).catch(() => setUsers([]));
+    fetchAdminUsers().then(setUsers).catch(error => { reportApiError(error); setUsers([]); });
   }, []);
 
   const sortedUsers = [...(users || [])].sort((a, b) => {
@@ -2860,7 +2959,7 @@ function AdminUsers({ session }) {
   return (
     <div className="page">
       <h1>Admin · Users</h1>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
       {users === null ? (
         <Spinner />
       ) : users.length === 0 ? (
@@ -2928,8 +3027,8 @@ function AdminMarketing() {
   const [sort, setSort] = useState({ key: 'created_at', dir: 'desc' });
 
   useEffect(() => {
-    fetchAdminUsers().then(setUsers).catch(() => setUsers([]));
-    fetchProducts().then(setProducts).catch(() => setProducts([]));
+    fetchAdminUsers().then(setUsers).catch(error => { reportApiError(error); setUsers([]); });
+    fetchProducts().then(setProducts).catch(error => { reportApiError(error); setProducts([]); });
   }, []);
 
   const q = userQuery.trim().toLowerCase();
@@ -2997,6 +3096,7 @@ function AdminMarketing() {
         <div className="card" style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
             <input
+              aria-label="Search customers"
               type="search"
               className="shop-search"
               style={{ maxWidth: 280 }}
@@ -3024,7 +3124,7 @@ function AdminMarketing() {
               <tbody>
                 {userSlice.map((u) => (
                   <tr key={u.email}>
-                    <td><input type="checkbox" checked={selectedUsers.has(u.email)} onChange={() => toggleUser(u.email)} /></td>
+                    <td><input aria-label={`Select ${u.name} for email`} type="checkbox" checked={selectedUsers.has(u.email)} onChange={() => toggleUser(u.email)} /></td>
                     <td>{u.name}</td>
                     <td>{u.email}</td>
                     <td>{u.last_login ? new Date(u.last_login).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
@@ -3045,8 +3145,8 @@ function AdminMarketing() {
         <div className="card" style={{ marginBottom: 24 }}>
           {products.length === 0 ? <p className="empty">No products yet</p> : (
             <div className="field" style={{ marginBottom: 0, position: 'relative' }}>
-              <label>Products ({selectedProducts.size} selected)</label>
-              <input
+              <label htmlFor="field-34">Products ({selectedProducts.size} selected)</label>
+              <input id="field-34"
                 type="text"
                 placeholder="Search and add a product…"
                 value={productQuery}
@@ -3104,12 +3204,12 @@ function AdminMarketing() {
         <h2>3. Message</h2>
         <div className="card" style={{ marginBottom: 24, display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div className="field">
-            <label>Subject</label>
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Diwali Dhamaka — 20% off this week!" maxLength={150} />
+            <label htmlFor="field-35">Subject</label>
+            <input id="field-35" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Diwali Dhamaka — 20% off this week!" maxLength={150} />
           </div>
           <div className="field" style={{ marginBottom: 0 }}>
-            <label>Message</label>
-            <textarea
+            <label htmlFor="field-36">Message</label>
+            <textarea id="field-36"
               className="review-input"
               rows={6}
               value={message}
@@ -3119,7 +3219,7 @@ function AdminMarketing() {
           </div>
         </div>
 
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error" role="alert">{error}</p>}
         {notice && <p className="success">{notice}</p>}
         <button className="btn" disabled={busy}>{busy ? 'Sending…' : `Send to ${selectedUsers.size} customer(s)`}</button>
       </form>
@@ -3143,15 +3243,17 @@ function UserMenu({ session, onLogout, route }) {
     <div className="user-menu" onClick={(e) => e.stopPropagation()}>
       <button
         type="button"
+        aria-expanded={open}
+        aria-controls="account-menu"
         className={open || route === '/profile' ? 'user-menu-btn open' : 'user-menu-btn'}
         onClick={() => setOpen(!open)}
       >
         {session.name || 'Account'} <span className="chevron">▾</span>
       </button>
       {open && (
-        <div className="user-menu-dropdown">
-          <a href="#/profile" onClick={() => setOpen(false)}>My Profile</a>
-          {!session.admin && <a href="#/orders" onClick={() => setOpen(false)}>My Orders</a>}
+        <div id="account-menu" className="user-menu-dropdown">
+          <a href="/profile" onClick={() => setOpen(false)}>My Profile</a>
+          {!session.admin && <a href="/orders" onClick={() => setOpen(false)}>My Orders</a>}
           <button type="button" onClick={() => { setOpen(false); onLogout(); }}>Logout</button>
         </div>
       )}
@@ -3162,23 +3264,50 @@ function UserMenu({ session, onLogout, route }) {
 // ─── APP SHELL ────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const route = useHashRoute();
+  const route = useRoute();
   const [session, setSession] = useState(getSession);
   const [cart, setCartState] = useState(loadCart);
   const [products, setProducts] = useState([]);
   const [productsLoaded, setProductsLoaded] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [apiError, setApiError] = useState('');
+  const [catalogRetry, setCatalogRetry] = useState(0);
+  useEffect(() => {
+    const handle = event => setApiError(event.detail);
+    window.addEventListener('api-error', handle);
+    return () => window.removeEventListener('api-error', handle);
+  }, []);
   const [toast, setToast] = useState('');
 
   useLocalBusinessSchema();
 
   useEffect(() => {
-    document.title = `${APP_NAME} — Souvenirs that flow with your memories`;
-  }, []);
+    const meta = (selector, attr, value) => {
+      let node = document.head.querySelector(selector);
+      if (!node) { node = document.createElement(attr === 'href' ? 'link' : 'meta'); document.head.appendChild(node); }
+      return node;
+    };
+    const canonical = meta('link[rel="canonical"]', 'href');
+    canonical.rel = 'canonical'; canonical.href = `${SITE_URL.replace(/\/$/, '')}${route}`;
+    const robots = meta('meta[name="robots"]', 'content'); robots.name = 'robots';
+    robots.content = route.startsWith('/admin') || ['/auth', '/cart', '/checkout', '/orders', '/profile'].includes(route) ? 'noindex, nofollow' : 'index, follow';
+    if (!route.startsWith('/product/')) {
+      const title = POLICY_PAGES[route]?.title || ({ '/shop': 'Shop the Collection', '/cart': 'Your Cart', '/auth': 'Your Account', '/checkout': 'Checkout', '/orders': 'My Orders', '/profile': 'My Profile' }[route]);
+      document.title = title ? `${title} — ${APP_NAME}` : `${APP_NAME} — Souvenirs that flow with your memories`;
+      const description = meta('meta[name="description"]', 'content'); description.name = 'description';
+      description.content = POLICY_PAGES[route]?.intro || `Hand-poured resin keepsakes from ${APP_NAME}. Ships in 10–15 days. Shipping included across India.`;
+    }
+  }, [route]);
 
   // Reload the catalog on navigation so admin edits show up in the shop right away.
   useEffect(() => {
-    fetchProducts().then(setProducts).catch(() => {}).finally(() => setProductsLoaded(true));
-  }, [route]);
+    let alive = true;
+    setCatalogError('');
+    fetchProducts().then(data => { if (alive) setProducts(data); })
+      .catch(error => { if (alive) setCatalogError(error.message); })
+      .finally(() => { if (alive) setProductsLoaded(true); });
+    return () => { alive = false; };
+  }, [route, catalogRetry]);
 
   const setCart = (next) => {
     setCartState(next);
@@ -3221,7 +3350,9 @@ export default function App() {
 
   let content;
   if (route === '/auth' || (needsAuth && !session)) {
-    content = <AuthPage onLogin={() => { setSession(getSession()); go('/shop'); }} />;
+    content = <AuthPage onLogin={() => { setSession(getSession()); const target = new URLSearchParams(window.location.search).get('returnTo'); go(target && /^\/(checkout|orders|profile|admin\/users)$/.test(target) ? target : needsAuth ? route : '/shop'); }} />;
+  } else if (POLICY_PAGES[route]) {
+    content = <><Breadcrumbs items={[{ label: 'Home', href: '/' }, { label: POLICY_PAGES[route].title }]} /><PolicyPage path={route} contact={CONTACT} brand={APP_NAME} /></>;
   } else if (route === '/shop') {
     // The admin manages the shop but doesn't buy from it — no cart. Use
     // "Impersonate" on Admin · Users to act on a customer's behalf.
@@ -3254,12 +3385,14 @@ export default function App() {
     content = <AdminUsers session={session} />;
   } else if (route === '/admin/marketing' && session?.admin) {
     content = <AdminMarketing />;
-  } else {
+  } else if (route === '/') {
     content = <Landing products={products} loading={!productsLoaded} />;
+  } else {
+    content = <div className="page"><h1>Page not found</h1><a className="btn" href="/shop">Browse the collection</a></div>;
   }
 
   const link = (path, label) => (
-    <a href={'#' + path} className={route === path ? 'active' : ''}>{label}</a>
+    <a href={path} className={route === path ? 'active' : ''}>{label}</a>
   );
 
   return (
@@ -3270,11 +3403,12 @@ export default function App() {
           <button type="button" onClick={stopImpersonation}>Stop Impersonation</button>
         </div>
       )}
-      <nav className="nav">
-        <a href="#/" className="brand">{BRAND_FIRST}{BRAND_REST && <> <em>{BRAND_REST}</em></>}</a>
+      <a href="#main-content" className="skip-link">Skip to content</a>
+      <nav className="nav" aria-label="Main navigation">
+        <a href="/" className="brand">{BRAND_FIRST}{BRAND_REST && <> <em>{BRAND_REST}</em></>}</a>
         {link('/shop', 'Shop')}
         {!session?.admin && (
-          <a href="#/cart" className={route === '/cart' ? 'active' : ''}>
+          <a href="/cart" className={route === '/cart' ? 'active' : ''}>
             Cart{cartCount > 0 && <span className="cart-count">{cartCount}</span>}
           </a>
         )}
@@ -3291,7 +3425,10 @@ export default function App() {
           link('/auth', 'Login')
         )}
       </nav>
-      {content}
+      <main id="main-content" tabIndex={-1}>
+        {apiError && <ApiFailure message={apiError} onRetry={() => window.location.reload()} onDismiss={() => setApiError('')} />}
+        {catalogError && ['/', '/shop'].includes(route) ? <div className="page"><ApiFailure message={catalogError} onRetry={() => setCatalogRetry(n => n + 1)} /></div> : content}
+      </main>
       {!route.startsWith('/admin') && <FAQ />}
       <Toast message={toast} />
       {!session?.admin && <StickyMobileCTA cartCount={cartCount} />}

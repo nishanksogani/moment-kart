@@ -2,6 +2,7 @@ import { db, ensureSchema } from './_db.js';
 import { requireAuth, requireAdmin } from './_auth.js';
 import { log, logError } from './_log.js';
 import { sendShippedEmail } from './_email.js';
+import { priceCart, signQuote, verifyQuote } from './_pricing.js';
 
 export default async function handler(req, res) {
   try {
@@ -18,9 +19,9 @@ const validDate = (s) => (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 // so they're the only statuses an admin can delete or attach a closing note to.
 const TERMINAL_STATUSES = ['fulfilled', 'cancelled'];
 
-async function ordersHandler(req, res) {
-  const sql = db();
-  await ensureSchema(sql);
+export async function ordersHandler(req, res, sqlOverride) {
+  const sql = sqlOverride || db();
+  if (!sqlOverride) await ensureSchema(sql);
 
   if (req.method === 'GET') {
     const user = requireAuth(req, res);
@@ -58,10 +59,23 @@ async function ordersHandler(req, res) {
     const user = requireAuth(req, res);
     if (!user) return;
 
-    const { items, address, upi_ref, transaction_date } = req.body || {};
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Cart is empty' });
+    if (req.body?.action === 'quote') {
+      const upiId = (process.env.ADMIN_UPI_ID || '').trim();
+      if (!upiId) return res.status(503).json({ error: 'Payments are temporarily unavailable. Please contact the shop.' });
+      const items = req.body?.items;
+      if (!Array.isArray(items) || items.length === 0 || items.length > 50) return res.status(400).json({ error: 'Cart must contain between 1 and 50 items' });
+      const ids = items.map(i => String(i?.productId || ''));
+      if (ids.some(id => !/^\d+$/.test(id))) return res.status(400).json({ error: 'Invalid product in cart' });
+      const products = await sql`SELECT id, name, price_paise, in_stock, customizable, dimensions FROM products WHERE id = ANY(${ids}::bigint[])`;
+      try {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(signQuote(priceCart(items, products), user.uid, upiId));
+      } catch (error) { return res.status(400).json({ error: error.message }); }
     }
+
+    const { address, upi_ref, transaction_date, quote_token } = req.body || {};
+    const quote = verifyQuote(quote_token, user.uid);
+    if (!quote) return res.status(409).json({ error: 'Your payment quote has expired or is invalid. Refresh prices before paying. If you already paid, contact support with your UTR.' });
     if (!address?.line1 || !address?.city || !address?.pincode) {
       return res.status(400).json({ error: 'Shipping address is incomplete' });
     }
@@ -69,46 +83,21 @@ async function ordersHandler(req, res) {
       return res.status(400).json({ error: 'Valid UPI transaction reference is required' });
     }
 
-    // Recompute the total server-side from the catalog; never trust client prices.
-    let total = 0;
-    const verifiedItems = [];
-    for (const item of items) {
-      const [product] = await sql`
-        SELECT id, name, price_paise, in_stock, customizable, dimensions FROM products WHERE id = ${item.productId}
-      `;
-      if (!product) return res.status(400).json({ error: `Product no longer available` });
-      if (!product.in_stock) return res.status(400).json({ error: `"${product.name}" is out of stock` });
-
-      let price_paise = product.price_paise;
-      let dimension = null;
-      const dims = Array.isArray(product.dimensions) ? product.dimensions : [];
-      if (dims.length > 0) {
-        dimension = dims.find((d) => d.label === item.dimension);
-        if (!dimension) return res.status(400).json({ error: `Choose a size for "${product.name}"` });
-        price_paise = dimension.price_paise;
-      }
-
-      const qty = Math.max(1, Math.min(20, parseInt(item.qty, 10) || 1));
-      total += price_paise * qty;
-      verifiedItems.push({
-        productId: product.id,
-        name: product.name,
-        price_paise,
-        dimension: dimension?.label || null,
-        qty,
-        message: product.customizable ? String(item.message || '').slice(0, 200) : '',
-      });
-    }
+    // Honour the signed, server-priced amount displayed in the payment QR.
+    const total = quote.total_paise;
+    const verifiedItems = quote.items;
 
     const [created] = await sql`
-      INSERT INTO orders (user_id, items, address, total_paise, upi_ref, paid_at)
+      INSERT INTO orders (user_id, items, address, total_paise, upi_ref, paid_at, checkout_key)
       VALUES (${user.uid}, ${JSON.stringify(verifiedItems)}, ${JSON.stringify(address)},
-              ${total}, ${String(upi_ref).trim()}, ${validDate(transaction_date)})
+              ${total}, ${String(upi_ref).trim()}, ${validDate(transaction_date)}, ${quote.checkout_key})
+      ON CONFLICT (checkout_key) DO UPDATE SET checkout_key = EXCLUDED.checkout_key
       RETURNING id, order_no
     `;
     const id = created.id;
 
-    // Save the shipping address into the profile if it's not already there.
+    // A profile failure must not turn a successfully persisted payment/order into a retry.
+    try {
     const [row] = await sql`SELECT address FROM users WHERE id = ${user.uid}`;
     const saved = Array.isArray(row?.address) ? row.address : row?.address ? [row.address] : [];
     const key = (a) => `${a.line1}|${a.pincode}`.toLowerCase();
@@ -116,6 +105,7 @@ async function ordersHandler(req, res) {
       saved.push(address);
       await sql`UPDATE users SET address = ${JSON.stringify(saved)} WHERE id = ${user.uid}`;
     }
+    } catch (error) { logError('order_address_save_failed', error, { orderId: id }); }
 
     log('order_placed', { orderId: id, orderNo: Number(created.order_no), userId: user.uid, totalPaise: total, itemCount: verifiedItems.length });
     return res.status(201).json({ id, order_no: Number(created.order_no), total_paise: total });

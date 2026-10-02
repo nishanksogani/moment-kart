@@ -1,7 +1,11 @@
 import { createHmac, timingSafeEqual, scryptSync, randomBytes } from 'crypto';
 
 // Set AUTH_SECRET env var in Vercel for production security.
-const SECRET = process.env.AUTH_SECRET || 'moment-kart-dev-secret-change-me';
+export function authSecret() {
+  if (process.env.AUTH_SECRET) return process.env.AUTH_SECRET;
+  if (process.env.NODE_ENV === 'development' && !process.env.VERCEL_ENV) return 'moment-kart-dev-secret-change-me';
+  throw new Error('AUTH_SECRET must be configured');
+}
 const TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 
 // The site has a single admin, defined by ADMIN_EMAIL + ADMIN_PASSWORD env vars.
@@ -43,7 +47,7 @@ export function createToken(user, ttlMs = TOKEN_TTL_MS) {
       exp: Date.now() + ttlMs,
     })
   ).toString('base64url');
-  const sig = createHmac('sha256', SECRET).update(payload).digest('base64url');
+  const sig = createHmac('sha256', authSecret()).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
 
@@ -53,7 +57,7 @@ export function verifyToken(token) {
   if (dot === -1) return null;
   const payload = token.slice(0, dot);
   const sig = token.slice(dot + 1);
-  const expected = createHmac('sha256', SECRET).update(payload).digest('base64url');
+  const expected = createHmac('sha256', authSecret()).update(payload).digest('base64url');
   try {
     const a = Buffer.from(sig, 'base64url');
     const b = Buffer.from(expected, 'base64url');

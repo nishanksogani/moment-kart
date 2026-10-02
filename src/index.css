@@ -18,7 +18,7 @@
   /* ink */
   --ink: #2a2440;
   --deep: #3b3160;         /* headings */
-  --slate: #7a7391;
+  --slate: #68607e;
   --muted: #a49dbd;
 
   /* accents */
@@ -835,6 +835,28 @@ th {
 }
 
 /* --- FAQ ------------------------------------------------------------------- */
+.skip-link { position: fixed; top: 8px; left: 16px; z-index: 1200; padding: 12px 20px; border-radius: 10px; background: var(--deep); color: white; transform: translateY(-160%); }
+.skip-link:focus { transform: translateY(0); }
+:where(button, a, input, textarea, select):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+main { min-height: 40vh; }
+main:focus { outline: none; }
+.api-failure { max-width: 1032px; margin: 20px auto; padding: 18px 20px; color: var(--deep); background: var(--tint-3); border: 1px solid #dba6c4; border-radius: var(--radius-sm); }
+.api-failure p { margin-bottom: 10px; }
+.api-failure > div { display: flex; gap: 10px; }
+.policy-page { max-width: 900px; }
+.policy-intro { margin: -8px 0 28px; line-height: 1.7; color: var(--slate); }
+.policy-content section + section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.policy-content h2 { margin-top: 0; }
+.policy-content p { line-height: 1.8; }
+.policy-content a, .policy-links a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+.policy-links { display: flex; flex-wrap: wrap; gap: 12px 20px; margin-top: 28px; }
+.stars-input button { border: none; background: transparent; padding: 5px; color: inherit; min-width: 36px; min-height: 36px; }
+.pd-open-photo { position: absolute; inset: 0; z-index: 1; border: none; background: transparent; cursor: zoom-in; border-radius: inherit; }
+.pd-photo-wrap .carousel-arrow, .pd-photo-wrap .carousel-dots { z-index: 2; }
+.dialog-close { float: right; width: 36px; height: 36px; border: none; background: var(--tint-1); color: var(--deep); border-radius: 50%; font-size: 24px; margin: -8px -8px 8px 8px; }
+.sort-button { border: none; background: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; padding: 4px 0; white-space: nowrap; }
+@media (max-width: 700px) { .toast { bottom: calc(90px + env(safe-area-inset-bottom)); max-width: calc(100vw - 32px); text-align: center; } }
+
 .faq-section { max-width: 720px; margin: 0 auto; padding-top: 40px; }
 .faq-list { margin-top: 18px; display: grid; gap: 10px; }
 .faq-item { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }

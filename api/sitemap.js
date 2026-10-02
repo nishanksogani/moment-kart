@@ -4,12 +4,13 @@
 import { db, ensureSchema } from './_db.js';
 import { logError } from './_log.js';
 
-const SITE = process.env.SITE_URL || 'https://moment-kart.vercel.app';
+const SITE = (process.env.SITE_URL || 'https://lagom-dezign.vercel.app').replace(/\/$/, '');
 
-const STATIC_ROUTES = ['/', '/shop', '/auth'];
+const STATIC_ROUTES = ['/', '/shop', '/shipping', '/returns', '/privacy', '/terms'];
 
 function urlEntry(path, changefreq, priority) {
-  return `  <url><loc>${SITE}/#${path}</loc><changefreq>${changefreq}</changefreq><priority>${priority}</priority></url>`;
+  const location = `${SITE}${path}`.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+  return `  <url><loc>${location}</loc><changefreq>${changefreq}</changefreq><priority>${priority}</priority></url>`;
 }
 
 export default async function handler(req, res) {

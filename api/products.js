@@ -54,17 +54,45 @@ const normalizeDimensions = (p) => {
   return [...byLabel.values()].slice(0, MAX_DIMENSIONS);
 };
 
-async function productsHandler(req, res) {
-  const sql = db();
-  await ensureSchema(sql);
+export async function productsHandler(req, res, sqlOverride) {
+  const sql = sqlOverride || db();
+  if (!sqlOverride) await ensureSchema(sql);
 
   if (req.method === 'GET') {
+    if (req.query.scope === 'admin') {
+      if (!requireAdmin(req, res)) return;
+      const rows = await sql`SELECT * FROM products ORDER BY sort_order ASC NULLS LAST, created_at DESC`;
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json(rows.map(r => ({ ...r, images: normalizeImages(r) })));
+    }
+    if (req.query.id) {
+      if (!/^\d+$/.test(String(req.query.id))) return res.status(400).json({ error: 'Invalid product id' });
+      const [product] = await sql`SELECT * FROM products WHERE id = ${req.query.id}`;
+      if (!product) return res.status(404).json({ error: 'Product not found' });
+      if (req.query.image !== undefined) {
+        const index = Number(req.query.image);
+        if (!Number.isInteger(index) || index < 0 || index > 2) return res.status(400).json({ error: 'Invalid image' });
+        const photo = normalizeImages(product)[index];
+        const source = req.query.size === 'thumb' ? (index === 0 ? product.thumb_url || photo?.thumb : photo?.thumb) : photo?.full;
+        const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/.exec(source || '');
+        res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        if (match) {
+          res.setHeader('Content-Type', match[1]);
+          return res.status(200).send(Buffer.from(match[2], 'base64'));
+        }
+        if (/^https:\/\//.test(source || '')) return res.redirect(302, source);
+        return res.status(404).json({ error: 'Image not found' });
+      }
+      const images = normalizeImages(product).map((_, i) => ({ thumb: `/api/products?id=${product.id}&image=${i}&size=thumb&v=${encodeURIComponent(product.updated_at || product.created_at)}`, full: `/api/products?id=${product.id}&image=${i}&v=${encodeURIComponent(product.updated_at || product.created_at)}` }));
+      return res.json({ ...product, image_url: images[0]?.full || '', thumb_url: product.thumb_url ? `/api/products?id=${product.id}&image=0&size=thumb&v=${encodeURIComponent(product.updated_at || product.created_at)}` : '', images });
+    }
     // Public: the shop needs the catalog without login.
     const rows = await sql`
-      SELECT id, name, description, price_paise, image_url, images, customizable, custom_label, in_stock, tags, featured, dimensions, created_at, thumb_url
+      SELECT id, name, description, price_paise, customizable, custom_label, in_stock, tags, featured, dimensions, created_at, updated_at, (thumb_url <> '') AS has_thumb
       FROM products ORDER BY sort_order ASC NULLS LAST, created_at DESC
     `;
-    return res.json(rows.map((r) => ({ ...r, images: normalizeImages(r) })));
+    return res.json(rows.map(({ has_thumb, ...r }) => ({ ...r, thumb_url: has_thumb ? `/api/products?id=${r.id}&image=0&size=thumb&v=${encodeURIComponent(r.updated_at || r.created_at)}` : '' })));
   }
 
   const admin = requireAdmin(req, res);
@@ -101,6 +129,7 @@ async function productsHandler(req, res) {
     const pricePaise = dimensions.length > 0 ? Math.min(...dimensions.map((d) => d.price_paise)) : p.price_paise;
     await sql`
       UPDATE products SET
+        updated_at = NOW(),
         name = ${p.name}, description = ${p.description || ''}, price_paise = ${pricePaise},
         image_url = ${images[0]?.thumb || ''}, images = ${JSON.stringify(images)}, customizable = ${!!p.customizable},
         custom_label = ${p.custom_label || 'Your message'}, in_stock = ${p.in_stock !== false},

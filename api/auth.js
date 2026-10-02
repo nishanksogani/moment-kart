@@ -1,13 +1,16 @@
-import { randomInt } from 'crypto';
+import { randomInt, createHmac } from 'crypto';
 import { db, ensureSchema } from './_db.js';
-import { hashPassword, checkPassword, createToken, isAdminEmail, isBuiltInAdmin } from './_auth.js';
+import { hashPassword, checkPassword, createToken, isAdminEmail, isBuiltInAdmin, authSecret } from './_auth.js';
+import { limitAuth } from './_rate-limit.js';
 import { sendVerificationEmail } from './_email.js';
 import { log, logError } from './_log.js';
 
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Verification codes are never returned to the client — they're emailed.
-async function issueCode(sql, email) {
+const codeHash = (email, purpose, code) => createHmac('sha256', authSecret()).update(`${email}:${purpose}:${code}`).digest('hex');
+
+async function issueCode(sql, email, purpose = 'verify') {
   const isProd = process.env.VERCEL_ENV === 'production';
   if (isProd && !(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)) {
     const err = new Error('Email service is not configured — signup is unavailable');
@@ -18,14 +21,12 @@ async function issueCode(sql, email) {
   const code = String(randomInt(100000, 1000000));
   const expiresAt = new Date(Date.now() + CODE_TTL_MS).toISOString();
   await sql`
-    INSERT INTO verification_codes (email, code, expires_at)
-    VALUES (${email}, ${code}, ${expiresAt})
-    ON CONFLICT (email) DO UPDATE SET code = ${code}, expires_at = ${expiresAt}
+    INSERT INTO verification_codes (email, code, expires_at, purpose)
+    VALUES (${email}, ${codeHash(email, purpose, code)}, ${expiresAt}, ${purpose})
+    ON CONFLICT (email) DO UPDATE SET code = ${codeHash(email, purpose, code)}, expires_at = ${expiresAt}, purpose = ${purpose}
   `;
-  // Always log the code so it can be recovered from the function logs
-  // (Vercel → Deployments → Logs) if the email doesn't arrive.
   const { sent } = await sendVerificationEmail(email, code);
-  log('verification_code_issued', { email, code, emailed: sent });
+  log('verification_code_issued', { email, purpose, emailed: sent });
 }
 
 export default async function handler(req, res) {
@@ -37,16 +38,20 @@ export default async function handler(req, res) {
   }
 }
 
-async function authHandler(req, res) {
+export async function authHandler(req, res, sqlOverride) {
   if (req.method !== 'POST') return res.status(405).end();
-  const sql = db();
-  await ensureSchema(sql);
+  const sql = sqlOverride || db();
+  if (!sqlOverride) await ensureSchema(sql);
 
   const { action } = req.body || {};
   const email = String(req.body?.email || '').trim().toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     return res.status(400).json({ error: 'Valid email is required' });
   }
+
+  if (!['signup', 'resend', 'verify', 'forgot', 'reset', 'login'].includes(action)) return res.status(400).json({ error: 'Unknown action' });
+  const bucket = action === 'login' ? 'login' : ['verify', 'reset'].includes(action) ? 'otp-check' : 'otp-send';
+  if (!await limitAuth(sql, req, res, email, bucket)) return;
 
   if (action === 'signup') {
     const name = String(req.body?.name || '').trim();
@@ -79,17 +84,12 @@ async function authHandler(req, res) {
 
   if (action === 'verify') {
     const code = String(req.body?.code || '').trim();
-    const [row] = await sql`SELECT code, expires_at FROM verification_codes WHERE email = ${email}`;
-    if (!row || row.code !== code) {
+    const [row] = await sql`DELETE FROM verification_codes WHERE email = ${email} AND purpose = 'verify' AND code = ${codeHash(email, 'verify', code)} AND expires_at > NOW() RETURNING email`;
+    if (!row) {
       log('verify_failed', { email, reason: 'invalid_code' });
-      return res.status(400).json({ error: 'Invalid verification code' });
-    }
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      log('verify_failed', { email, reason: 'expired' });
-      return res.status(400).json({ error: 'Code expired — request a new one' });
+      return res.status(400).json({ error: 'Invalid or expired verification code' });
     }
     await sql`UPDATE users SET verified = TRUE, last_login = NOW() WHERE email = ${email}`;
-    await sql`DELETE FROM verification_codes WHERE email = ${email}`;
     const [user] = await sql`SELECT id, email, name FROM users WHERE email = ${email}`;
     log('verify_success', { email });
     return res.json({ token: createToken(user), admin: isAdminEmail(email) });
@@ -100,7 +100,7 @@ async function authHandler(req, res) {
     log('forgot_password_requested', { email, accountExists: !!user });
     // Same response either way, so the API can't be used to probe which emails exist.
     if (!user) return res.json({ message: 'If an account exists, a reset code has been sent' });
-    await issueCode(sql, email);
+    await issueCode(sql, email, 'reset');
     return res.json({ message: 'If an account exists, a reset code has been sent' });
   }
 
@@ -108,17 +108,12 @@ async function authHandler(req, res) {
     const code = String(req.body?.code || '').trim();
     const password = String(req.body?.password || '');
     if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    const [row] = await sql`SELECT code, expires_at FROM verification_codes WHERE email = ${email}`;
-    if (!row || row.code !== code) {
+    const [row] = await sql`DELETE FROM verification_codes WHERE email = ${email} AND purpose = 'reset' AND code = ${codeHash(email, 'reset', code)} AND expires_at > NOW() RETURNING email`;
+    if (!row) {
       log('reset_failed', { email, reason: 'invalid_code' });
-      return res.status(400).json({ error: 'Invalid reset code' });
-    }
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      log('reset_failed', { email, reason: 'expired' });
-      return res.status(400).json({ error: 'Code expired — request a new one' });
+      return res.status(400).json({ error: 'Invalid or expired reset code' });
     }
     await sql`UPDATE users SET password_hash = ${hashPassword(password)}, verified = TRUE, last_login = NOW() WHERE email = ${email}`;
-    await sql`DELETE FROM verification_codes WHERE email = ${email}`;
     const [user] = await sql`SELECT id, email, name FROM users WHERE email = ${email}`;
     log('password_reset', { email });
     return res.json({ token: createToken(user), admin: isAdminEmail(email) });
@@ -151,6 +146,7 @@ async function authHandler(req, res) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     if (!user.verified) {
+      if (!await limitAuth(sql, req, res, email, 'otp-send')) return;
       await issueCode(sql, email);
       log('login_blocked_unverified', { email });
       return res.status(403).json({ error: 'Email not verified', needsVerification: true });
